@@ -1,0 +1,633 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  SUPER_ADMIN
+  WAREHOUSE_ADMIN
+  OPERATOR
+  CUSTOMER_SERVICE
+  FINANCE
+  CUSTOMER
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ReceivingOrderStatus {
+  PENDING
+  ARRIVED
+  CHECKING
+  RECEIVING
+  COMPLETED
+  PUTAWAY_PENDING
+  PUTAWAY_PARTIAL
+  PUTAWAY_COMPLETED
+  EXCEPTION
+  EXCEPTION_CLOSED
+}
+
+enum PutawayTaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum OutboundOrderStatus {
+  PENDING
+  ALLOCATED
+  WAVE_ASSIGNED
+  PICKING
+  PICKED
+  PACKING
+  PACKED
+  SHIPPED
+  SIGNED
+  EXCEPTION
+  CANCELLED
+}
+
+enum LocationStatus {
+  EMPTY
+  OCCUPIED
+  RESERVED
+  DISABLED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         Role       @default(OPERATOR)
+  warehouseId  String?
+  warehouse    Warehouse? @relation(fields: [warehouseId], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model Warehouse {
+  id              String           @id @default(cuid())
+  name            String
+  code            String           @unique
+  address         String?
+  isActive        Boolean          @default(true)
+  users           User[]
+  locations       Location[]
+  inventories     Inventory[]
+  receivingOrders ReceivingOrder[]
+  putawayTasks    PutawayTask[]
+  putawayRules    PutawayRule[]
+  outboundOrders  OutboundOrder[]
+  transitOrders   TransitOrder[]
+  waves           Wave[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+model Customer {
+  id             String         @id @default(cuid())
+  code           String         @unique
+  name           String
+  contactName    String?
+  phone          String?
+  email          String?
+  settlementType String? // prepaid | credit
+  creditLimit    Decimal        @default(0)
+  balance        Decimal        @default(0)
+  status         CustomerStatus @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  transactions    CustomerTransaction[]
+  products        Product[]
+  inventories     Inventory[]
+  receivingOrders ReceivingOrder[]
+  outboundOrders  OutboundOrder[]
+  transitOrders   TransitOrder[]
+  bills           CustomerBill[]
+}
+
+model CustomerTransaction {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  type        String // topup | deduction | adjustment
+  amount      Decimal
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  sku        String   @unique
+  name       String // display name (legacy compat, auto-filled from nameZh or nameEn)
+  nameZh     String? // 品名(中文)
+  nameEn     String? // 品名(英文)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  barcode    String? // 条形码编号
+
+  // ─── Dimensions & Weight ─────────────────────────
+  unit          String   @default("pcs")
+  weight        Decimal? @db.Decimal(8, 3) // 预估重量（单个SKU）
+  weightUnit    String   @default("kg") // 预估重量单位
+  length        Decimal? @db.Decimal(8, 1) // 预估长度（单个SKU）
+  width         Decimal? @db.Decimal(8, 1) // 预估宽度（单个SKU）
+  height        Decimal? @db.Decimal(8, 1) // 预估高度（单个SKU）
+  dimensionUnit String   @default("cm") // 预估尺寸单位
+
+  // ─── Trade & Customs ─────────────────────────────
+  hsCode        String? // HS Code (海关编码)
+  originCountry String? // 原产国(二字码)
+  declaredValue Decimal? @db.Decimal(10, 2) // 申报价值
+  actualValue   Decimal? @db.Decimal(8, 2) // 实际价值
+  currency      String   @default("USD") // 币种(三字码)
+  material      String? // 材质
+  usage         String? // 用途
+
+  // ─── Supply Chain ────────────────────────────────
+  brand          String? // 品牌
+  supplier       String? // 供应商
+  model          String? // 型号
+  itemType       String? // 组合类型
+  hasShippingBag Boolean @default(false) // 自带物流包装
+  packagingAttr  String? // 物流包装属性
+  salesUrl       String? // 商品链接
+  catalogue      String? // 目录
+  warehouseCodes String? // 关联海外仓仓库代码 (comma-separated)
+  remark         String? // 备注
+  imageUrl       String?
+
+  // ─── Regulatory & Compliance ─────────────────────
+  batteryConfig   String? // 电池配置: 不含电池 | 内置电池 | 配套电池 | 纯电池
+  otherAttrs      String? // 其他属性
+  isHazardous     Boolean @default(false) // 危险品
+  hazardCode      String? // 危险代码
+  prop65          Boolean @default(false) // Prop65
+  isFood          Boolean @default(false) // 食品
+  isRefrigerated  Boolean @default(false) // 冷藏
+  hasSerialNumber Boolean @default(false) // 序列号管理
+  isLotControlled Boolean @default(false) // 批次管理
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ─── Relations ───────────────────────────────────
+  battery        ProductBattery?
+  receivingItems ReceivingItem[]
+  inventoryItems Inventory[]
+  putawayTasks   PutawayTask[]
+  outboundItems  OutboundItem[]
+  transitItems   TransitItem[]
+}
+
+// ─── Battery sub-table (1:1 with Product) ──────────────────────────
+model ProductBattery {
+  id              String   @id @default(cuid())
+  productId       String   @unique
+  product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  batteryType     String? // 电池类型: 锂电池(锂离子电池) | 锂电池(锂金属电池) | 纽扣电池 | 铅酸电池 | 干电池 | 镍氢电池 | 其他
+  cellOrPack      String? // 电池芯/电池组
+  batteryModel    String? // 电池型号
+  quantity        Int? // 电池数量（个数）
+  weightGrams     Decimal? @db.Decimal(8, 2) // 单个电池重量(g)
+  capacityMah     Decimal? @db.Decimal(8, 2) // 单个电池安时额定值(mAh)
+  voltageV        Decimal? @db.Decimal(8, 2) // 单个电池额定电压(V)
+  lithiumContentG Decimal? @db.Decimal(8, 2) // 单个电池锂含量(g)
+  packageMaterial String? // 电池包装材质
+  packaging       String? // 电池包装
+  chargeStatus    String? // 电池充电状态
+  otherDesc       String? // 其他电池属性
+  carryingLabel   String? // 商品携带标签
+  unCode          String? // UN编码 (e.g. UN3480)
+  msdsFileList    String? // MSDS报告证书链接列表 (comma-separated URLs)
+}
+
+model Location {
+  id          String         @id @default(cuid())
+  code        String         @unique
+  warehouseId String
+  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id])
+  zone        String?
+  row         String?
+  col         Int?
+  floor       Int?
+  status      LocationStatus @default(EMPTY)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  inventoryItems Inventory[]
+  putawayTasks   PutawayTask[]
+}
+
+model Inventory {
+  id           String    @id @default(cuid())
+  warehouseId  String
+  warehouse    Warehouse @relation(fields: [warehouseId], references: [id])
+  customerId   String
+  customer     Customer  @relation(fields: [customerId], references: [id])
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id])
+  locationId   String
+  location     Location  @relation(fields: [locationId], references: [id])
+  batchNo      String?
+  availableQty Int       @default(0)
+  frozenQty    Int       @default(0)
+  totalQty     Int       @default(0)
+  safetyStock  Int       @default(0)
+  unit         String    @default("pcs")
+
+  // ─── Step 4: Batch / Expiry / FIFO ────────────────
+  expiryDate      DateTime? // 效期
+  inventoryStatus String    @default("QUALIFIED") // 待检 PENDING_CHECK | 合格 QUALIFIED | 冻结 FROZEN | 残品 DAMAGED
+  serialNo        String? // 序列号
+  containerNo     String? // 容器号
+  inboundDate     DateTime? // 入库日期 (used for FIFO sorting)
+
+  allocations OutboundAllocation[]
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([warehouseId, productId])
+  @@index([customerId])
+  @@index([locationId])
+  @@index([expiryDate])
+  @@index([inboundDate])
+}
+
+model ReceivingOrder {
+  id               String               @id @default(cuid())
+  receivingNo      String               @unique
+  customerId       String
+  customer         Customer             @relation(fields: [customerId], references: [id])
+  warehouseId      String
+  warehouse        Warehouse            @relation(fields: [warehouseId], references: [id])
+  trackingNo       String?
+  expectedQuantity Int                  @default(0)
+  actualQuantity   Int                  @default(0)
+  status           ReceivingOrderStatus @default(PENDING)
+  operatorId       String?
+  remark           String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  items        ReceivingItem[]
+  putawayTasks PutawayTask[]
+}
+
+model ReceivingItem {
+  id               String         @id @default(cuid())
+  receivingOrderId String
+  receivingOrder   ReceivingOrder @relation(fields: [receivingOrderId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product        @relation(fields: [productId], references: [id])
+  expectedQty      Int
+  receivedQty      Int            @default(0)
+}
+
+model PutawayTask {
+  id               String            @id @default(cuid())
+  taskNo           String            @unique
+  receivingOrderId String
+  receivingOrder   ReceivingOrder    @relation(fields: [receivingOrderId], references: [id])
+  productId        String
+  product          Product           @relation(fields: [productId], references: [id])
+  warehouseId      String
+  warehouse        Warehouse         @relation(fields: [warehouseId], references: [id])
+  locationId       String?
+  location         Location?         @relation(fields: [locationId], references: [id])
+  qty              Int               @default(0)
+  status           PutawayTaskStatus @default(PENDING)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+}
+
+model OutboundOrder {
+  id          String              @id @default(cuid())
+  orderNo     String              @unique
+  customerId  String
+  customer    Customer            @relation(fields: [customerId], references: [id])
+  warehouseId String
+  warehouse   Warehouse           @relation(fields: [warehouseId], references: [id])
+  status      OutboundOrderStatus @default(PENDING)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  // ─── Fulfillment: Shipper / Service ──────────────────
+  shipperId      String? // 发货人ID
+  shipperNameZh  String? // 发货人中文名
+  shipperNameEn  String? // 发货人英文名
+  serviceName    String? // 服务名称
+  serviceLocked  Boolean @default(false) // 锁定选用服务
+  serviceUpdated Boolean @default(false) // 服务已更新
+
+  // ─── Fulfillment: References / Source ────────────────
+  customerRef        String? // 客户参考号
+  platformRef        String? // 平台参考号
+  platformCode       String? // 电商平台代码
+  orderSource        String? // 订单来源
+  creator            String? // 创建人
+  inboundOrderNo     String? // 所属入库单 (snapshot of ReceivingOrder.receivingNo)
+  inboundContainerNo String? // 入库柜号
+
+  // ─── Fulfillment: Tracking / Carrier ─────────────────
+  trackingNo     String? // 跟踪号
+  trackingNo1    String? // 跟踪号1
+  trackingTrace  String? // 跟踪号最新轨迹
+  trackingTrace1 String? // 跟踪号最新轨迹1
+  carrier        String? // 承运商
+  multiPackage   Boolean @default(false) // 一票多件
+
+  // ─── Fulfillment: Recipient (ship-to) ────────────────
+  recipientName     String? // 收件人名称
+  recipientCompany  String? // 公司名称
+  recipientPhone    String? // 电话
+  recipientEmail    String? // 邮箱
+  recipientZip      String? // 收件邮编
+  recipientCountry  String? // 收件国家
+  recipientProvince String? // 收件省/州
+  recipientCity     String? // 收件城市
+  recipientDistrict String? // 收件区
+  recipientAddress1 String? // 收件地址第一行
+  recipientAddress2 String? // 收件地址第二行
+  recipientAddress3 String? // 收件地址第三行
+  shipToCode        String? // 收货地址代码
+  addressType       String? // 地址分类
+  remark            String? // 备注
+
+  // ─── Fulfillment: Charges ────────────────────────────
+  transactionAmount   Decimal? @db.Decimal(10, 2) // 交易金额
+  transactionCurrency String? // 交易币种
+  fee                 Decimal? @db.Decimal(10, 2) // 费用
+
+  // ─── Fulfillment: Weights / Volume / Package ─────────
+  totalWeightKg        Decimal? @db.Decimal(10, 3) // 商品总重量（KG）
+  totalVolumeCbm       Decimal? @db.Decimal(12, 4) // 商品总体积（CBM）
+  packageLength        Decimal? @db.Decimal(8, 1) // 包裹长度
+  packageWidth         Decimal? @db.Decimal(8, 1) // 包裹宽度
+  packageHeight        Decimal? @db.Decimal(8, 1) // 包裹高度
+  packageActualWeight  Decimal? @db.Decimal(10, 3) // 包裹实际重量
+  packageBillingWeight Decimal? @db.Decimal(10, 3) // 包裹计费重量
+  packageActualVolume  Decimal? @db.Decimal(12, 4) // 包裹实际体积
+
+  // ─── Fulfillment: Lifecycle / Exceptions ─────────────
+  pickingType     String? // 拣货类型
+  submittedAt     DateTime? // 提交时间
+  shippedAt       DateTime? // 出库时间
+  cancelledAt     DateTime? // 取消时间
+  exceptionReason String? // 异常原因
+  cancelResult    String? // 取消结果
+
+  items      OutboundItem[]
+  exceptions OutboundException[]
+  waveOrders WaveOrder[]
+}
+
+model OutboundItem {
+  id              String        @id @default(cuid())
+  outboundOrderId String
+  outboundOrder   OutboundOrder @relation(fields: [outboundOrderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id])
+  requiredQty     Int
+  pickedQty       Int           @default(0)
+  packedQty       Int           @default(0)
+  allocations     OutboundAllocation[]
+}
+
+// Allocation ledger: which Inventory row reserved how much for an OutboundItem.
+// Created on allocate() (FIFO), consumed on ship(), released on cancel/exception.
+model OutboundAllocation {
+  id             String       @id @default(cuid())
+  outboundItemId String
+  outboundItem   OutboundItem @relation(fields: [outboundItemId], references: [id], onDelete: Cascade)
+  inventoryId    String
+  inventory      Inventory    @relation(fields: [inventoryId], references: [id])
+  qty            Int
+  createdAt      DateTime     @default(now())
+
+  @@index([outboundItemId])
+  @@index([inventoryId])
+}
+
+
+model CustomerBill {
+  id         String    @id @default(cuid())
+  billNo     String    @unique
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id])
+  period     String
+  amount     Decimal
+  status     String    @default("unpaid")
+  dueDate    DateTime?
+  paidAt     DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  items BillItem[]
+}
+
+model BillItem {
+  id          String       @id @default(cuid())
+  billId      String
+  bill        CustomerBill @relation(fields: [billId], references: [id], onDelete: Cascade)
+  feeType     String
+  description String?
+  qty         Decimal
+  unitPrice   Decimal
+  totalAmount Decimal
+}
+
+model OutboundException {
+  id              String        @id @default(cuid())
+  exceptionNo     String        @unique
+  outboundOrderId String
+  outboundOrder   OutboundOrder @relation(fields: [outboundOrderId], references: [id], onDelete: Cascade)
+  type            String // 'SHORT_PICK' | 'DAMAGE' | 'OTHER'
+  reason          String?
+  status          String        @default("OPEN") // 'OPEN' | 'RESOLVED'
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model TransitOrder {
+  id          String    @id @default(cuid())
+  orderNo     String    @unique
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id])
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  status      String    @default("PENDING") // 'PENDING' | 'RECEIVED' | 'SHIPPED'
+  trackingNo  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items TransitItem[]
+}
+
+model TransitItem {
+  id             String       @id @default(cuid())
+  transitOrderId String
+  transitOrder   TransitOrder @relation(fields: [transitOrderId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id])
+  expectedQty    Int
+  actualQty      Int          @default(0)
+}
+
+// ─── Audit Trail ────────────────────────────────────────────────────
+
+model InventoryTransaction {
+  id           String   @id @default(cuid())
+  warehouseId  String
+  customerId   String?
+  productId    String
+  locationId   String?
+  batchNo      String?
+  type         String // INBOUND | OUTBOUND | ADJUST | FREEZE | UNFREEZE | TRANSFER | PUTAWAY
+  qtyBefore    Int      @default(0)
+  qtyChange    Int      @default(0)
+  qtyAfter     Int      @default(0)
+  refType      String? // RECEIVING_ORDER | OUTBOUND_ORDER | PUTAWAY_TASK | MANUAL_ADJUST | TRANSIT_ORDER
+  refId        String? // ID of the source document
+  refNo        String? // Human-readable ref number (e.g. IN-260228-0001)
+  reason       String?
+  operatorId   String?
+  operatorName String?
+  createdAt    DateTime @default(now())
+
+  @@index([warehouseId, productId])
+  @@index([refType, refId])
+  @@index([operatorId])
+  @@index([createdAt])
+}
+
+model OperationLog {
+  id           String   @id @default(cuid())
+  entityType   String // RECEIVING_ORDER | OUTBOUND_ORDER | INVENTORY | CUSTOMER | PRODUCT | PUTAWAY_TASK | TRANSIT_ORDER
+  entityId     String
+  action       String // CREATE | UPDATE | DELETE | STATUS_CHANGE | ARRIVE | CHECK | RECEIVE | COMPLETE | PACK | SHIP | ALLOCATE | EXCEPTION | CANCEL
+  beforeData   String? // JSON snapshot before change
+  afterData    String? // JSON snapshot after change
+  description  String? // Human-readable description of the change
+  operatorId   String?
+  operatorName String?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([operatorId])
+  @@index([createdAt])
+}
+
+// ─── Step 3: Unified Exception Center ──────────────────────────────
+
+enum ExceptionStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  CANCELLED
+}
+
+model ExceptionCase {
+  id          String          @id @default(cuid())
+  caseNo      String          @unique // EXC-260501-0001
+  entityType  String // RECEIVING_ORDER | OUTBOUND_ORDER | TRANSIT_ORDER | PUTAWAY_TASK | INVENTORY
+  entityId    String // ID of the related order/task
+  entityNo    String? // Human-readable ref (e.g. IN-260228-0001)
+  type        String // SHORT_PICK | DAMAGE | QUANTITY_MISMATCH | WRONG_ITEM | MISSING_ITEM | EXPIRED | OTHER
+  severity    String          @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  title       String // Short description
+  description String? // Detailed description
+  status      ExceptionStatus @default(OPEN)
+  resolution  String? // Resolution notes
+  resolvedBy  String? // Operator who resolved
+  resolvedAt  DateTime?
+  warehouseId String?
+  customerId  String?
+  productId   String? // Related product if applicable
+  locationId  String? // Related location if applicable
+  attachments String? // JSON array of file URLs
+  createdBy   String? // Operator who reported
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([entityType, entityId])
+  @@index([status])
+  @@index([warehouseId])
+  @@index([createdAt])
+}
+
+// ─── Step 5: Dictionary / Config Center ────────────────────────────
+
+model Dictionary {
+  id         String   @id @default(cuid())
+  category   String // e.g. BATTERY_CONFIG | HAZARD_CODE | INVENTORY_STATUS | EXCEPTION_TYPE | DIMENSION_UNIT | WEIGHT_UNIT | CURRENCY
+  code       String // e.g. LITHIUM_ION
+  label      String // e.g. 锂电池(锂离子电池)
+  labelEn    String? // e.g. Lithium-ion Battery
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  parentCode String? // For hierarchical dictionaries
+  extra      String? // JSON for additional metadata
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([category, code])
+  @@index([category])
+}
+
+// ─── Sprint 5: Putaway Strategy Engine ─────────────────────────────
+
+model PutawayRule {
+  id              String    @id @default(cuid())
+  warehouseId     String
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id])
+  zone            String // recommend EMPTY locations from this zone
+  productCategory String? // matched vs Product.itemType; '*' or NULL = catch-all
+  priority        Int       @default(0) // higher priority wins when multiple rules match
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([warehouseId, isActive, priority])
+}
+
+// ─── Sprint 5: Wave Management (波次) ───────────────────────────────
+
+model Wave {
+  id          String      @id @default(cuid())
+  waveNo      String      @unique // WV-YYMMDD-NNNN
+  warehouseId String
+  warehouse   Warehouse   @relation(fields: [warehouseId], references: [id])
+  strategy    String      @default("PICK_AND_PASS") // PICK_AND_PASS 摘果 | BATCH_SOW 播种
+  status      String      @default("PENDING") // PENDING | RELEASED | COMPLETED | CANCELLED
+  orderCount  Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  waveOrders  WaveOrder[]
+
+  @@index([warehouseId, status])
+}
+
+model WaveOrder {
+  id              String        @id @default(cuid())
+  waveId          String
+  wave            Wave          @relation(fields: [waveId], references: [id], onDelete: Cascade)
+  outboundOrderId String
+  outboundOrder   OutboundOrder @relation(fields: [outboundOrderId], references: [id])
+  createdAt       DateTime      @default(now())
+
+  @@unique([waveId, outboundOrderId])
+  @@index([outboundOrderId])
+}
