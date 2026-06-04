@@ -1,7 +1,7 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { PageContainer, ProTable } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
-import { Dropdown, Popconfirm, message } from 'antd';
+import { Dropdown, Popconfirm, message, Drawer, Descriptions, Table, Spin, Empty } from 'antd';
 import { MoreOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 
@@ -25,6 +25,11 @@ interface OutboundOrderRow {
   totalItems: number;
   status: OutboundStatus;
   createdAt: string;
+  // Fulfillment fields surfaced as list columns (list() already returns all scalars via ...rest).
+  recipientName?: string | null;
+  carrier?: string | null;
+  trackingNo?: string | null;
+  fee?: string | null; // Prisma Decimal → string
 }
 
 // Mirrors backend OUTBOUND_TRANSITIONS — list-page actions only.
@@ -72,8 +77,135 @@ const ACTIONS: Partial<Record<OutboundStatus, Array<{ key: string; label: string
   ],
 };
 
+// Fulfillment field groups rendered in the detail drawer (mirrors the OutboundOrder schema sections).
+const DETAIL_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string }> }> = [
+  {
+    title: '收件信息',
+    fields: [
+      { key: 'recipientName', label: '收件人' },
+      { key: 'recipientCompany', label: '公司' },
+      { key: 'recipientPhone', label: '电话' },
+      { key: 'recipientEmail', label: '邮箱' },
+      { key: 'recipientCountry', label: '国家' },
+      { key: 'recipientProvince', label: '省/州' },
+      { key: 'recipientCity', label: '城市' },
+      { key: 'recipientDistrict', label: '区' },
+      { key: 'recipientZip', label: '邮编' },
+      { key: 'recipientAddress1', label: '地址1' },
+      { key: 'recipientAddress2', label: '地址2' },
+      { key: 'recipientAddress3', label: '地址3' },
+      { key: 'shipToCode', label: '收货地址代码' },
+      { key: 'addressType', label: '地址分类' },
+      { key: 'remark', label: '备注' },
+    ],
+  },
+  {
+    title: '承运与跟踪',
+    fields: [
+      { key: 'carrier', label: '承运商' },
+      { key: 'trackingNo', label: '跟踪号' },
+      { key: 'trackingNo1', label: '跟踪号1' },
+      { key: 'trackingTrace', label: '最新轨迹' },
+      { key: 'trackingTrace1', label: '最新轨迹1' },
+      { key: 'multiPackage', label: '一票多件' },
+    ],
+  },
+  {
+    title: '发货人与服务',
+    fields: [
+      { key: 'shipperNameZh', label: '发货人(中)' },
+      { key: 'shipperNameEn', label: '发货人(英)' },
+      { key: 'shipperId', label: '发货人ID' },
+      { key: 'serviceName', label: '服务名称' },
+      { key: 'serviceLocked', label: '锁定服务' },
+      { key: 'serviceUpdated', label: '服务已更新' },
+    ],
+  },
+  {
+    title: '引用与来源',
+    fields: [
+      { key: 'customerRef', label: '客户参考号' },
+      { key: 'platformRef', label: '平台参考号' },
+      { key: 'platformCode', label: '平台代码' },
+      { key: 'orderSource', label: '订单来源' },
+      { key: 'creator', label: '创建人' },
+      { key: 'inboundOrderNo', label: '所属入库单' },
+      { key: 'inboundContainerNo', label: '入库柜号' },
+    ],
+  },
+  {
+    title: '费用',
+    fields: [
+      { key: 'transactionAmount', label: '交易金额' },
+      { key: 'transactionCurrency', label: '交易币种' },
+      { key: 'fee', label: '费用' },
+    ],
+  },
+  {
+    title: '重量 / 体积 / 包裹',
+    fields: [
+      { key: 'totalWeightKg', label: '总重量(KG)' },
+      { key: 'totalVolumeCbm', label: '总体积(CBM)' },
+      { key: 'packageLength', label: '长' },
+      { key: 'packageWidth', label: '宽' },
+      { key: 'packageHeight', label: '高' },
+      { key: 'packageActualWeight', label: '实际重量' },
+      { key: 'packageBillingWeight', label: '计费重量' },
+      { key: 'packageActualVolume', label: '实际体积' },
+    ],
+  },
+  {
+    title: '生命周期',
+    fields: [
+      { key: 'pickingType', label: '拣货类型' },
+      { key: 'submittedAt', label: '提交时间' },
+      { key: 'shippedAt', label: '出库时间' },
+      { key: 'cancelledAt', label: '取消时间' },
+      { key: 'exceptionReason', label: '异常原因' },
+      { key: 'cancelResult', label: '取消结果' },
+    ],
+  },
+];
+
+// Display a raw detail value: booleans → 是/否, *At datetimes → trimmed, empty → '-'.
+const fmtDetail = (key: string, val: unknown): string => {
+  if (val === null || val === undefined || val === '') return '-';
+  if (typeof val === 'boolean') return val ? '是' : '否';
+  if (/At$/.test(key) && typeof val === 'string') return val.replace('T', ' ').slice(0, 19);
+  return String(val);
+};
+
+type OutboundDetail = Record<string, any> & {
+  orderNo: string;
+  customerName: string;
+  status: string;
+  warehouseCode: string | null;
+  warehouseAddress: string | null;
+  totalProductCount: number;
+  items: Array<{ sku?: string; productName?: string; requiredQty: number; pickedQty: number; packedQty: number }>;
+  exceptions: Array<{ id: string; exceptionNo?: string; type?: string; reason?: string; status?: string }>;
+};
+
 const OutboundList: React.FC = () => {
   const actionRef = useRef<ActionType>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailData, setDetailData] = useState<OutboundDetail | null>(null);
+
+  const openDetail = async (id: string) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailData(null);
+    try {
+      const res: any = await request.get(`/outbound-orders/${id}`);
+      // request interceptor returns the full envelope { code, message, data }; the order is at .data.
+      setDetailData(res?.data ?? null);
+    } catch {
+      setDetailData(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
 
   const fetchOutbound = async (params: any) => {
     const { current, pageSize, ...rest } = params || {};
@@ -142,6 +274,36 @@ const OutboundList: React.FC = () => {
       },
     },
     {
+      title: '收件人',
+      dataIndex: 'recipientName',
+      width: 120,
+      ellipsis: true,
+      search: false,
+      render: (_, r) => r.recipientName || '-',
+    },
+    {
+      title: '承运商',
+      dataIndex: 'carrier',
+      width: 110,
+      search: false,
+      render: (_, r) => r.carrier || '-',
+    },
+    {
+      title: '跟踪号',
+      dataIndex: 'trackingNo',
+      width: 160,
+      ellipsis: true,
+      search: false,
+      render: (_, r) => r.trackingNo || '-',
+    },
+    {
+      title: '费用',
+      dataIndex: 'fee',
+      width: 90,
+      search: false,
+      render: (_, r) => r.fee ?? '-',
+    },
+    {
       title: '创建时间',
       dataIndex: 'createdAt',
       valueType: 'dateTime',
@@ -168,7 +330,7 @@ const OutboundList: React.FC = () => {
           </Popconfirm>
         ));
         nodes.push(
-          <a key="view" className="text-secondary hover:text-blue-400">详情</a>,
+          <a key="view" className="text-secondary hover:text-blue-400" onClick={() => openDetail(row.id)}>详情</a>,
           <Dropdown
             key="more"
             menu={{ items: [{ key: 'print', label: '打印拣货单' }] }}
@@ -207,6 +369,75 @@ const OutboundList: React.FC = () => {
         dateFormatter="string"
         headerTitle="出库单列表"
       />
+
+      <Drawer
+        title={detailData ? `出库单 ${detailData.orderNo}` : '出库单详情'}
+        width={760}
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+      >
+        {detailLoading ? (
+          <Spin />
+        ) : !detailData ? (
+          <Empty description="暂无数据" />
+        ) : (
+          <div className="flex flex-col gap-4">
+            <Descriptions size="small" column={2} bordered title="基本信息">
+              <Descriptions.Item label="出库单号">{detailData.orderNo}</Descriptions.Item>
+              <Descriptions.Item label="客户">{detailData.customerName}</Descriptions.Item>
+              <Descriptions.Item label="状态">{detailData.status}</Descriptions.Item>
+              <Descriptions.Item label="海外仓">{fmtDetail('warehouseCode', detailData.warehouseCode)}</Descriptions.Item>
+              <Descriptions.Item label="仓库地址">{fmtDetail('warehouseAddress', detailData.warehouseAddress)}</Descriptions.Item>
+              <Descriptions.Item label="产品总数">{detailData.totalProductCount}</Descriptions.Item>
+            </Descriptions>
+
+            {DETAIL_GROUPS.map((g) => (
+              <Descriptions key={g.title} size="small" column={2} bordered title={g.title}>
+                {g.fields.map((f) => (
+                  <Descriptions.Item key={f.key} label={f.label}>
+                    {fmtDetail(f.key, detailData[f.key])}
+                  </Descriptions.Item>
+                ))}
+              </Descriptions>
+            ))}
+
+            <div>
+              <div className="font-medium mb-2">商品明细</div>
+              <Table
+                rowKey="sku"
+                dataSource={detailData.items ?? []}
+                pagination={false}
+                size="small"
+                columns={[
+                  { title: 'SKU', dataIndex: 'sku' },
+                  { title: '品名', dataIndex: 'productName' },
+                  { title: '需求', dataIndex: 'requiredQty', width: 70 },
+                  { title: '已拣', dataIndex: 'pickedQty', width: 70 },
+                  { title: '已打包', dataIndex: 'packedQty', width: 70 },
+                ]}
+              />
+            </div>
+
+            {(detailData.exceptions?.length ?? 0) > 0 && (
+              <div>
+                <div className="font-medium mb-2">异常记录</div>
+                <Table
+                  rowKey="id"
+                  dataSource={detailData.exceptions}
+                  pagination={false}
+                  size="small"
+                  columns={[
+                    { title: '异常号', dataIndex: 'exceptionNo' },
+                    { title: '类型', dataIndex: 'type' },
+                    { title: '原因', dataIndex: 'reason' },
+                    { title: '状态', dataIndex: 'status' },
+                  ]}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </Drawer>
     </PageContainer>
   );
 };
