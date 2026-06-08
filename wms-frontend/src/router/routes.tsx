@@ -11,6 +11,7 @@ import {
   SettingOutlined,
   ShoppingOutlined,
   FileTextOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 
 // Pages
@@ -49,6 +50,10 @@ import BarcodeGenerator from '../pages/Warehouse/Barcode';
 import PutawayDiff from '../pages/Inbound/PutawayDiff';
 import InventoryCheck from '../pages/Warehouse/InventoryCheck';
 import BillingGeneration from '../pages/Fee/BillingGen';
+import ExceptionCenter from '../pages/Exception';
+import AuditLog from '../pages/Settings/AuditLog';
+import InventoryFlow from '../pages/Warehouse/InventoryFlow';
+import DictionaryManage from '../pages/Settings/Dictionary';
 
 export interface RouteConfig {
   path: string;
@@ -95,6 +100,10 @@ export const routeElements: Record<string, React.ReactNode> = {
   '/fee/billing': <BillingDashboard />,
   '/fee/billing/generate': <BillingGeneration />,
   '/settings/basic': <SystemSettings />,
+  '/settings/audit-log': <AuditLog />,
+  '/settings/dictionary': <DictionaryManage />,
+  '/exception/center': <ExceptionCenter />,
+  '/warehouse/inventory/transactions': <InventoryFlow />,
 };
 
 // Menu structure definition (3 levels)
@@ -166,6 +175,7 @@ export const menuRoutes: RouteConfig[] = [
         routes: [
           { path: '/warehouse/inventory', name: '库存查询' },
           { path: '/warehouse/inventory/check', name: '盘点作业' },
+          { path: '/warehouse/inventory/transactions', name: '库存流水' },
           { path: '/warehouse/location', name: '库位大屏' },
           { path: '/warehouse/barcode', name: '条码生成' },
           { path: '/warehouse/material', name: '包材管理' },
@@ -201,6 +211,14 @@ export const menuRoutes: RouteConfig[] = [
           { path: '/fba/transfer/signout', name: '头程签出台' },
         ],
       },
+      {
+        path: '/biz/exception',
+        name: '异常管理',
+        icon: <WarningOutlined />,
+        routes: [
+          { path: '/exception/center', name: '异常中心' },
+        ],
+      },
     ],
   },
   {
@@ -231,6 +249,8 @@ export const menuRoutes: RouteConfig[] = [
         icon: <SettingOutlined />,
         routes: [
           { path: '/settings/basic', name: '基础配置' },
+          { path: '/settings/audit-log', name: '操作日志' },
+          { path: '/settings/dictionary', name: '数据字典' },
         ],
       },
     ],

@@ -49,7 +49,13 @@ export class ExceptionCaseController {
       warehouseId,
       type,
     });
-    return ok(result);
+    // Normalize to the standard { data, pagination } envelope used by every other list
+    // endpoint (receiving-orders, audit, products, …) so the frontend reads res.data / res.pagination.
+    return ok(result.data, {
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+    });
   }
 
   @Roles('SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'OPERATOR', 'CUSTOMER_SERVICE')
