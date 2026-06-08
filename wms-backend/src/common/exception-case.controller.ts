@@ -3,7 +3,7 @@ import { ExceptionCaseService } from './exception-case.service';
 import { ok } from './api-response';
 import { Roles } from './decorators/roles.decorator';
 
-@Controller('api/v1/exceptions')
+@Controller('exceptions')
 export class ExceptionCaseController {
   constructor(private readonly exceptionService: ExceptionCaseService) {}
 
