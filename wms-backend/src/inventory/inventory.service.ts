@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 interface ListInventoryQuery {
@@ -107,11 +107,26 @@ export class InventoryService {
     }
 
     const deltaQty = Number(body.deltaQty);
+    if (!Number.isFinite(deltaQty)) {
+      throw new BadRequestException(
+        `调整数量无效（deltaQty 必须为有限数字）: ${body.deltaQty}`,
+      );
+    }
+
+    // Negative-stock guard: an adjustment must not drive available (or total) below 0.
+    const nextAvailable = row.availableQty + deltaQty;
+    const nextTotal = row.totalQty + deltaQty;
+    if (nextAvailable < 0 || nextTotal < 0) {
+      throw new BadRequestException(
+        `调整后库存为负：可用 ${row.availableQty}→${nextAvailable}，总量 ${row.totalQty}→${nextTotal}`,
+      );
+    }
+
     const updated = await this.prisma.inventory.update({
       where: { id: row.id },
       data: {
-        availableQty: row.availableQty + deltaQty,
-        totalQty: row.totalQty + deltaQty,
+        availableQty: nextAvailable,
+        totalQty: nextTotal,
       },
       include: ROW_INCLUDE,
     });

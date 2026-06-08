@@ -68,7 +68,7 @@ const WaveList: React.FC = () => {
     setPickData(null);
     try {
       const res: any = await request.get(`/waves/${id}/pick-list`);
-      setPickData(res ?? null);
+      setPickData(res?.data ?? null);
     } catch {
       setPickData(null);
     } finally {

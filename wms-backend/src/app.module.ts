@@ -18,6 +18,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { OutboundOrdersModule } from './outbound-orders/outbound-orders.module';
 import { WavesModule } from './waves/waves.module';
+import { WarehousesModule } from './warehouses/warehouses.module';
 import { FeeModule } from './fee/fee.module';
 import { BillsModule } from './bills/bills.module';
 import { TransitOrdersModule } from './transit-orders/transit-orders.module';
@@ -49,6 +50,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     DashboardModule,
     OutboundOrdersModule,
     WavesModule,
+    WarehousesModule,
     FeeModule,
     BillsModule,
     TransitOrdersModule,

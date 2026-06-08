@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { PageContainer, ProTable } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
-import { Dropdown, Popconfirm, message, Drawer, Descriptions, Table, Spin, Empty } from 'antd';
+import { Dropdown, Popconfirm, message, Drawer, Descriptions, Table, Spin, Empty, Button, Modal, Form, Select, InputNumber, Input, Space, Divider } from 'antd';
 import { MoreOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 
@@ -186,11 +186,191 @@ type OutboundDetail = Record<string, any> & {
   exceptions: Array<{ id: string; exceptionNo?: string; type?: string; reason?: string; status?: string }>;
 };
 
+// Optional fulfillment fields offered in the create form (key subset of the 51; all @IsOptional in the DTO).
+const FULFILLMENT_OPTIONAL_FIELDS: Array<{ name: string; label: string }> = [
+  { name: 'recipientName', label: '收件人' },
+  { name: 'recipientPhone', label: '电话' },
+  { name: 'recipientCountry', label: '国家' },
+  { name: 'recipientProvince', label: '省/州' },
+  { name: 'recipientCity', label: '城市' },
+  { name: 'recipientAddress1', label: '收件地址' },
+  { name: 'carrier', label: '承运商' },
+  { name: 'trackingNo', label: '跟踪号' },
+  { name: 'remark', label: '备注' },
+];
+
+// Create a single outbound order. Selectors populate from /customers, /warehouses, /products on open.
+const CreateOrderModal: React.FC<{ open: boolean; onClose: () => void; onSuccess: () => void }> = ({
+  open,
+  onClose,
+  onSuccess,
+}) => {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  const [customers, setCustomers] = useState<Array<{ label: string; value: string }>>([]);
+  const [warehouses, setWarehouses] = useState<Array<{ label: string; value: string }>>([]);
+  const [products, setProducts] = useState<Array<{ label: string; value: string }>>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      try {
+        const [c, w, p]: any[] = await Promise.all([
+          request.get('/customers', { params: { pageSize: 200 } }),
+          request.get('/warehouses'),
+          request.get('/products', { params: { pageSize: 500 } }),
+        ]);
+        setCustomers((c?.data ?? []).map((x: any) => ({ value: x.id, label: `${x.name}${x.customerCode ? ` (${x.customerCode})` : ''}` })));
+        setWarehouses((w?.data ?? []).map((x: any) => ({ value: x.id, label: `${x.code}${x.name ? ` · ${x.name}` : ''}` })));
+        setProducts((p?.data ?? []).map((x: any) => ({ value: x.id, label: `${x.sku}${x.name ? ` · ${x.name}` : ''}` })));
+      } catch {
+        // request interceptor surfaces the error
+      }
+    })();
+  }, [open]);
+
+  const handleOk = async () => {
+    const values = await form.validateFields();
+    setSubmitting(true);
+    try {
+      await request.post('/outbound-orders', values);
+      message.success('出库单已创建');
+      form.resetFields();
+      onSuccess();
+      onClose();
+    } catch {
+      // request interceptor surfaces the error
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="新建出库单" open={open} onOk={handleOk} confirmLoading={submitting} onCancel={onClose} width={720} destroyOnClose>
+      <Form form={form} layout="vertical" initialValues={{ items: [{}] }}>
+        <Form.Item name="customerId" label="客户" rules={[{ required: true, message: '请选择客户' }]}>
+          <Select showSearch optionFilterProp="label" options={customers} placeholder="选择客户" />
+        </Form.Item>
+        <Form.Item name="warehouseId" label="海外仓" rules={[{ required: true, message: '请选择仓库' }]}>
+          <Select showSearch optionFilterProp="label" options={warehouses} placeholder="选择仓库" />
+        </Form.Item>
+
+        <div className="font-medium mb-2">商品明细</div>
+        <Form.List name="items">
+          {(fields, { add, remove }) => (
+            <div className="flex flex-col gap-2 mb-2">
+              {fields.map(({ key, name }) => (
+                <Space key={key} align="baseline">
+                  <Form.Item name={[name, 'productId']} rules={[{ required: true, message: '选择商品' }]} className="mb-0">
+                    <Select showSearch optionFilterProp="label" options={products} placeholder="商品 SKU" style={{ width: 380 }} />
+                  </Form.Item>
+                  <Form.Item name={[name, 'requiredQty']} rules={[{ required: true, message: '数量' }]} className="mb-0">
+                    <InputNumber min={1} placeholder="数量" />
+                  </Form.Item>
+                  {fields.length > 1 && (
+                    <a className="text-red-500" onClick={() => remove(name)}>
+                      删除
+                    </a>
+                  )}
+                </Space>
+              ))}
+              <a onClick={() => add()}>+ 添加明细行</a>
+            </div>
+          )}
+        </Form.List>
+
+        <Divider orientation="left" plain>
+          履约信息（选填）
+        </Divider>
+        <div className="grid grid-cols-2 gap-x-4">
+          {FULFILLMENT_OPTIONAL_FIELDS.map((f) => (
+            <Form.Item key={f.name} name={f.name} label={f.label}>
+              <Input />
+            </Form.Item>
+          ))}
+        </div>
+      </Form>
+    </Modal>
+  );
+};
+
+// Bulk-import outbound orders from pasted JSON (POST /outbound-orders/bulk-import).
+const BulkImportModal: React.FC<{ open: boolean; onClose: () => void; onSuccess: () => void }> = ({
+  open,
+  onClose,
+  onSuccess,
+}) => {
+  const [text, setText] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<{ created: number; total: number; orderNos: string[]; errors: string[] } | null>(null);
+
+  const close = () => {
+    setText('');
+    setResult(null);
+    onClose();
+  };
+
+  const handleOk = async () => {
+    let payload: { orders: unknown[] };
+    try {
+      const parsed = JSON.parse(text);
+      payload = Array.isArray(parsed) ? { orders: parsed } : parsed;
+    } catch {
+      message.error('JSON 解析失败，请检查格式');
+      return;
+    }
+    if (!payload?.orders || !Array.isArray(payload.orders) || payload.orders.length === 0) {
+      message.error('需提供 orders 数组（至少 1 单）');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res: any = await request.post('/outbound-orders/bulk-import', payload);
+      setResult(res?.data ?? null);
+      if ((res?.data?.created ?? 0) > 0) onSuccess();
+    } catch {
+      // request interceptor surfaces the error
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="批量导入出库单 (JSON)" open={open} onOk={handleOk} confirmLoading={submitting} onCancel={close} width={680} okText="导入" destroyOnClose>
+      <div className="text-sm mb-2" style={{ color: '#888' }}>
+        粘贴出库单 JSON：数组 [&#123;...&#125;] 或 &#123;"orders":[...]&#125;。每单需含 customerId / warehouseId / items[]（productId + requiredQty）。
+      </div>
+      <Input.TextArea
+        rows={10}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={'[{"customerId":"...","warehouseId":"...","items":[{"productId":"...","requiredQty":1}]}]'}
+      />
+      {result && (
+        <div className="mt-3">
+          <div>
+            成功 {result.created} / {result.total}；单号：{result.orderNos?.join(', ') || '-'}
+          </div>
+          {result.errors?.length > 0 && (
+            <ul className="mt-1" style={{ color: '#cf1322' }}>
+              {result.errors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+};
+
 const OutboundList: React.FC = () => {
   const actionRef = useRef<ActionType>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState<OutboundDetail | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const openDetail = async (id: string) => {
     setDetailOpen(true);
@@ -368,6 +548,14 @@ const OutboundList: React.FC = () => {
         }}
         dateFormatter="string"
         headerTitle="出库单列表"
+        toolBarRender={() => [
+          <Button key="create" type="primary" onClick={() => setCreateOpen(true)}>
+            新建出库单
+          </Button>,
+          <Button key="import" onClick={() => setImportOpen(true)}>
+            批量导入
+          </Button>,
+        ]}
       />
 
       <Drawer
@@ -438,6 +626,9 @@ const OutboundList: React.FC = () => {
           </div>
         )}
       </Drawer>
+
+      <CreateOrderModal open={createOpen} onClose={() => setCreateOpen(false)} onSuccess={() => actionRef.current?.reload()} />
+      <BulkImportModal open={importOpen} onClose={() => setImportOpen(false)} onSuccess={() => actionRef.current?.reload()} />
     </PageContainer>
   );
 };

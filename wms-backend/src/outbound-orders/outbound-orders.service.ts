@@ -83,28 +83,51 @@ export class OutboundOrdersService {
       throw new BadRequestException(`商品不存在: ${missing.join(', ')}`);
     }
 
-    const count = await this.prisma.outboundOrder.count();
-    const orderNo = `OB-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${String(count + 1).padStart(4, '0')}`;
+    // Per-day sequential orderNo (OB-YYMMDD-NNNN) derived from the highest existing
+    // number for today's prefix — delete-safe, unlike the old count()+1. The bounded
+    // retry covers the rare concurrent clash on the orderNo unique constraint.
+    const datePart = new Date().toISOString().slice(2, 10).replace(/-/g, '');
+    const prefix = `OB-${datePart}-`;
+    const MAX_TRIES = 5;
 
-    const order = await this.prisma.outboundOrder.create({
-      data: {
-        orderNo,
-        ...fields, // customerId, warehouseId + whitelisted fulfillment scalars
-        status: 'PENDING',
-        items: {
-          create: items.map((i) => ({ productId: i.productId, requiredQty: i.requiredQty })),
-        },
-      },
-      include: { items: { include: { product: true } } },
-    });
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      const last = await this.prisma.outboundOrder.findFirst({
+        where: { orderNo: { startsWith: prefix } },
+        orderBy: { orderNo: 'desc' },
+        select: { orderNo: true },
+      });
+      const nextSeq = last ? Number(last.orderNo.slice(prefix.length)) + 1 : 1;
+      const orderNo = `${prefix}${String(nextSeq).padStart(4, '0')}`;
 
-    await this.opLog.log({
-      entityType: 'OUTBOUND_ORDER', entityId: order.id, action: 'CREATE',
-      beforeData: {}, afterData: { orderNo, status: 'PENDING', itemCount: items.length },
-      description: `出库单 ${orderNo} 创建`,
-    });
+      try {
+        const order = await this.prisma.outboundOrder.create({
+          data: {
+            orderNo,
+            ...fields, // customerId, warehouseId + whitelisted fulfillment scalars
+            status: 'PENDING',
+            items: {
+              create: items.map((i) => ({ productId: i.productId, requiredQty: i.requiredQty })),
+            },
+          },
+          include: { items: { include: { product: true } } },
+        });
 
-    return order;
+        await this.opLog.log({
+          entityType: 'OUTBOUND_ORDER', entityId: order.id, action: 'CREATE',
+          beforeData: {}, afterData: { orderNo, status: 'PENDING', itemCount: items.length },
+          description: `出库单 ${orderNo} 创建`,
+        });
+
+        return order;
+      } catch (e) {
+        // Concurrent insert grabbed this number first → recompute and retry.
+        if ((e as { code?: string }).code === 'P2002' && attempt < MAX_TRIES) continue;
+        throw e;
+      }
+    }
+
+    // All retries collided on the unique constraint (extremely unlikely).
+    throw new BadRequestException('生成出库单号冲突，请重试');
   }
 
   // ─── Bulk create (JSON 批量导入) ────────────────────────────────────
