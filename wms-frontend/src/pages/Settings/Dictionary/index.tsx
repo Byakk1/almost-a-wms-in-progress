@@ -47,15 +47,24 @@ const DictionaryManage: React.FC = () => {
 
   const openCreate = () => {
     setEditing(null);
-    form.resetFields();
-    form.setFieldsValue({ category, sortOrder: 0, isActive: true });
     setModalOpen(true);
   };
 
   const openEdit = (row: DictItem) => {
     setEditing(row);
-    form.setFieldsValue(row);
     setModalOpen(true);
+  };
+
+  // Prefill once the modal's form has actually mounted. Doing this in the open handlers
+  // (or a useEffect on modalOpen) ran before rc-dialog mounted the fields, leaving 分类 blank.
+  const onModalOpenChange = (open: boolean) => {
+    if (!open) return;
+    if (editing) {
+      form.setFieldsValue(editing);
+    } else {
+      form.resetFields();
+      form.setFieldsValue({ category, sortOrder: 0, isActive: true });
+    }
   };
 
   const submit = async () => {
@@ -162,7 +171,8 @@ const DictionaryManage: React.FC = () => {
         open={modalOpen}
         onOk={submit}
         onCancel={() => setModalOpen(false)}
-        destroyOnClose
+        afterOpenChange={onModalOpenChange}
+        destroyOnHidden
         okText="保存"
         cancelText="取消"
       >
