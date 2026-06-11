@@ -3,6 +3,7 @@ import { ProLayout } from '@ant-design/pro-components';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { menuRoutes, findRouteNameByPath } from '../router/routes';
+import { filterMenuByRole, canAccessPath, firstLeafPath } from '../router/permissions';
 import { useTabStore } from '../store/tabs';
 import logoSVG from '../assets/logo.svg';
 import TabLayout from './TabLayout';
@@ -14,11 +15,30 @@ const AppLayout: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const addTab = useTabStore(state => state.addTab);
+  const role = user?.role;
+
+  // Menu filtered to the current role (RBAC). Backend @Roles is the real guard;
+  // this just hides what the user can't use. See router/permissions.ts.
+  const visibleRoutes = React.useMemo(() => filterMenuByRole(menuRoutes, role), [role]);
 
   // Sync state with location initially
   React.useEffect(() => {
     setPathname(location.pathname);
   }, [location.pathname]);
+
+  // Landing fallback: if the default route isn't permitted for this role
+  // (e.g. CUSTOMER can't see /dashboard), send them to their first visible page.
+  React.useEffect(() => {
+    if (location.pathname === '/' || location.pathname === '/dashboard') {
+      if (!canAccessPath('/dashboard', role)) {
+        const first = firstLeafPath(visibleRoutes);
+        if (first) {
+          setPathname(first);
+          navigate(first, { replace: true });
+        }
+      }
+    }
+  }, [role, location.pathname, visibleRoutes, navigate]);
 
   const handleMenuClick = (path: string, name?: string) => {
     setPathname(path);
@@ -79,7 +99,7 @@ const AppLayout: React.FC = () => {
           </div>
         )}
         route={{
-          routes: menuRoutes,
+          routes: visibleRoutes,
         }}
         contentStyle={{ padding: 0, margin: 0, height: 'calc(100vh - 56px)' }} // Ensure content area occupies full height
       >

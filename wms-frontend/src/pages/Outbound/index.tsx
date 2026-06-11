@@ -4,6 +4,7 @@ import type { ActionType, ProColumns } from '@ant-design/pro-components';
 import { Dropdown, Popconfirm, message, Drawer, Descriptions, Table, Spin, Empty, Button, Modal, Form, Select, InputNumber, Input, Space, Divider } from 'antd';
 import { MoreOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
+import Authorized from '../../components/Authorized';
 
 type OutboundStatus =
   | 'PENDING'
@@ -549,12 +550,16 @@ const OutboundList: React.FC = () => {
         dateFormatter="string"
         headerTitle="出库单列表"
         toolBarRender={() => [
-          <Button key="create" type="primary" onClick={() => setCreateOpen(true)}>
-            新建出库单
-          </Button>,
-          <Button key="import" onClick={() => setImportOpen(true)}>
-            批量导入
-          </Button>,
+          <Authorized key="create" action="outbound.create">
+            <Button type="primary" onClick={() => setCreateOpen(true)}>
+              新建出库单
+            </Button>
+          </Authorized>,
+          <Authorized key="import" action="outbound.bulkImport">
+            <Button onClick={() => setImportOpen(true)}>
+              批量导入
+            </Button>
+          </Authorized>,
         ]}
       />
 

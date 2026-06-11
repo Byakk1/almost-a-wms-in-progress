@@ -3,6 +3,7 @@ import { PageContainer, ProTable } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
 import { Drawer, Table, Popconfirm, Tag, message, Empty, Spin } from 'antd';
 import request from '../../../utils/request';
+import { useCan } from '../../../router/permissions';
 
 type WaveStatus = 'PENDING' | 'RELEASED' | 'COMPLETED' | 'CANCELLED';
 
@@ -38,6 +39,7 @@ const ACTIONS: Partial<Record<WaveStatus, Array<{ key: string; label: string; en
 
 const WaveList: React.FC = () => {
   const actionRef = useRef<ActionType>(null);
+  const canManageWaves = useCan('wave.manage'); // release/complete/cancel — OPS roles only (mirrors waves.controller)
   const [pickOpen, setPickOpen] = useState(false);
   const [pickLoading, setPickLoading] = useState(false);
   const [pickData, setPickData] = useState<PickListData | null>(null);
@@ -105,7 +107,7 @@ const WaveList: React.FC = () => {
       valueType: 'option',
       width: 220,
       render: (_, row) => {
-        const actions = ACTIONS[row.status] ?? [];
+        const actions = canManageWaves ? (ACTIONS[row.status] ?? []) : [];
         const nodes = actions.map((a) => (
           <Popconfirm
             key={a.key}

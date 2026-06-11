@@ -4,6 +4,9 @@ import { Tabs, Dropdown } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTabStore } from '../store/tabs';
 import { routeElements, findRouteNameByPath } from '../router/routes';
+import { canAccessPath } from '../router/permissions';
+import { useAuthStore } from '../store/auth';
+import NoPermission from '../components/NoPermission';
 import type { DragEndEvent } from '@dnd-kit/core';
 import {
   DndContext,
@@ -46,6 +49,7 @@ const DraggableTabNode = ({ className, ...props }: DraggableTabPaneProps) => {
 
 const TabLayout: React.FC = () => {
   const { tabs, activeKey, addTab, removeTab, setActiveKey, closeAll, closeOthers, setTabs } = useTabStore();
+  const role = useAuthStore((s) => s.userInfo?.role);
   const location = useLocation();
   const navigate = useNavigate();
   const [contextMenuRef, setContextMenuRef] = useState<{ x: number; y: number; key: string } | null>(null);
@@ -187,8 +191,10 @@ const TabLayout: React.FC = () => {
             ),
             children: (
               <div className="tab-page-wrapper">
-                {/* Find the corresponding element for the tab's path */}
-                {routeElements[tab.path] || <div className="p-8 text-center text-gray-500">页面未找到 404</div>}
+                {/* Find the corresponding element for the tab's path (RBAC-guarded for direct/typed access) */}
+                {!canAccessPath(tab.path, role)
+                  ? <NoPermission />
+                  : routeElements[tab.path] || <div className="p-8 text-center text-gray-500">页面未找到 404</div>}
               </div>
             ),
             closable: true,
