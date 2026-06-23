@@ -247,7 +247,7 @@ const CreateOrderModal: React.FC<{ open: boolean; onClose: () => void; onSuccess
   };
 
   return (
-    <Modal title="新建出库单" open={open} onOk={handleOk} confirmLoading={submitting} onCancel={onClose} width={720} destroyOnClose>
+    <Modal title="新建出库单" open={open} onOk={handleOk} confirmLoading={submitting} onCancel={onClose} width={720} destroyOnHidden>
       <Form form={form} layout="vertical" initialValues={{ items: [{}] }}>
         <Form.Item name="customerId" label="客户" rules={[{ required: true, message: '请选择客户' }]}>
           <Select showSearch optionFilterProp="label" options={customers} placeholder="选择客户" />
@@ -337,7 +337,7 @@ const BulkImportModal: React.FC<{ open: boolean; onClose: () => void; onSuccess:
   };
 
   return (
-    <Modal title="批量导入出库单 (JSON)" open={open} onOk={handleOk} confirmLoading={submitting} onCancel={close} width={680} okText="导入" destroyOnClose>
+    <Modal title="批量导入出库单 (JSON)" open={open} onOk={handleOk} confirmLoading={submitting} onCancel={close} width={680} okText="导入" destroyOnHidden>
       <div className="text-sm mb-2" style={{ color: '#888' }}>
         粘贴出库单 JSON：数组 [&#123;...&#125;] 或 &#123;"orders":[...]&#125;。每单需含 customerId / warehouseId / items[]（productId + requiredQty）。
       </div>

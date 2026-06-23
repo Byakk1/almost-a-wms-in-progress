@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AdjustInventoryDto } from './dto/adjust-inventory.dto';
 
 interface ListInventoryQuery {
   page?: number;
@@ -98,7 +99,7 @@ export class InventoryService {
     };
   }
 
-  async adjust(body: { sku: string; locationCode: string; deltaQty: number; reason?: string }) {
+  async adjust(body: AdjustInventoryDto) {
     const row = await this.prisma.inventory.findFirst({
       where: { product: { sku: body.sku }, location: { code: body.locationCode } },
     });
@@ -106,12 +107,8 @@ export class InventoryService {
       return false;
     }
 
-    const deltaQty = Number(body.deltaQty);
-    if (!Number.isFinite(deltaQty)) {
-      throw new BadRequestException(
-        `调整数量无效（deltaQty 必须为有限数字）: ${body.deltaQty}`,
-      );
-    }
+    // deltaQty is validated as a finite integer by AdjustInventoryDto (@IsInt).
+    const deltaQty = body.deltaQty;
 
     // Negative-stock guard: an adjustment must not drive available (or total) below 0.
     const nextAvailable = row.availableQty + deltaQty;

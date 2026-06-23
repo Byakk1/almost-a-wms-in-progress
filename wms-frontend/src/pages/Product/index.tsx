@@ -256,7 +256,7 @@ const ProductManage: React.FC = () => {
         okText="保存"
         okButtonProps={{ style: { backgroundColor: '#D23148' } }}
         width={960}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" className="mt-2">
           <Tabs

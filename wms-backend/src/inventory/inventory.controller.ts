@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { ok } from '../common/api-response';
 import { InventoryService } from './inventory.service';
 import { Roles } from '../common/decorators/roles.decorator';
+import { AdjustInventoryDto } from './dto/adjust-inventory.dto';
 
 @Controller('inventory')
 export class InventoryController {
@@ -28,15 +29,7 @@ export class InventoryController {
 
   @Roles('SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'OPERATOR')
   @Post('adjust')
-  async adjust(
-    @Body()
-    body: {
-      sku: string;
-      locationCode: string;
-      deltaQty: number;
-      reason?: string;
-    },
-  ) {
+  async adjust(@Body() body: AdjustInventoryDto) {
     return ok(await this.inventoryService.adjust(body));
   }
 }
