@@ -1,129 +1,108 @@
-import React, { useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { PageContainer, ProTable } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
-import { Button, Tag, Space, Alert } from 'antd';
-import { ExportOutlined, EyeOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Button, Tag, Space, Alert, theme } from 'antd';
+import { ExportOutlined, WarningOutlined } from '@ant-design/icons';
+import request from '../../../utils/request';
 
+// Mirrors the projection returned by OutboundOrdersService.exceptions().
+// NOTE: `type` is a free-form String column (the schema comment suggests
+// SHORT_PICK / DAMAGE / OTHER but real rows contain Chinese free text), so it
+// is rendered verbatim rather than through a valueEnum that would blank out
+// anything unexpected.
 interface ExceptionItem {
   id: string;
-  orderNo: string;
-  trackingNo: string;
-  customerName: string;
-  exceptionType: 'LOST' | 'DAMAGED' | 'MISMATCH' | 'DELAY' | 'RETURN';
-  description: string;
-  amount: number;
-  status: 'OPEN' | 'PROCESSING' | 'RESOLVED' | 'CLOSED';
-  reportedAt: string;
-  resolvedAt?: string;
+  exceptionNo: string;
+  orderNo: string | null;
+  type: string | null;
+  reason: string | null;
+  status: string;
+  createdAt: string;
 }
 
 const OutboundException: React.FC = () => {
   const actionRef = useRef<ActionType>(null);
+  const { token } = theme.useToken();
+  const [openCount, setOpenCount] = useState(0);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const fetchExceptions = async (_params: any, _sort: any, _filter: any) => {
-    await new Promise((r) => setTimeout(r, 600));
-    const data: ExceptionItem[] = [
-      {
-        id: '1', orderNo: 'ORD-260220-001', trackingNo: 'SF1234500001', customerName: '深圳大卖贸易',
-        exceptionType: 'DAMAGED', description: '包裹外箱严重破损，内部商品受损 2 件',
-        amount: 560, status: 'PROCESSING', reportedAt: '2026-02-22 10:30',
-      },
-      {
-        id: '2', orderNo: 'ORD-260215-003', trackingNo: 'JD9876500002', customerName: 'Global E-commerce Ltd.',
-        exceptionType: 'LOST', description: '承运商确认包裹丢失，已申请理赔',
-        amount: 1200, status: 'OPEN', reportedAt: '2026-02-20 14:00',
-      },
-      {
-        id: '3', orderNo: 'ORD-260210-002', trackingNo: 'YT3344400003', customerName: '跨境优品',
-        exceptionType: 'MISMATCH', description: '到仓扫描 SKU 与订单不匹配，多出 SKU-A001 × 3',
-        amount: 0, status: 'RESOLVED', reportedAt: '2026-02-12 09:15', resolvedAt: '2026-02-14 16:00',
-      },
-      {
-        id: '4', orderNo: 'ORD-260228-005', trackingNo: 'EMS9988700004', customerName: '欧洲专线',
-        exceptionType: 'RETURN', description: '收件方拒签，包裹已退回仓库',
-        amount: 320, status: 'OPEN', reportedAt: '2026-03-01 08:00',
-      },
-      {
-        id: '5', orderNo: 'ORD-260201-001', trackingNo: 'UPS5566000005', customerName: '深圳大卖贸易',
-        exceptionType: 'DELAY', description: '因港口拥堵延误发货，预计延误 5 工作日',
-        amount: 0, status: 'CLOSED', reportedAt: '2026-02-05 11:00', resolvedAt: '2026-02-18 10:00',
-      },
-    ];
-    return { data, success: true, total: data.length };
-  };
+  // GET /outbound-exceptions returns the full set — no pagination, no filters.
+  // So the list is fetched whole and narrowed client-side; the search bar is
+  // honest about what it does because the result set is small by nature.
+  const allRef = useRef<ExceptionItem[]>([]);
 
-  const EXCEPTION_COLOR: Record<string, string> = {
-    LOST: 'error', DAMAGED: 'error', MISMATCH: 'warning', DELAY: 'warning', RETURN: 'default',
-  };
-  const EXCEPTION_LABEL: Record<string, string> = {
-    LOST: '丢失', DAMAGED: '破损', MISMATCH: '品项不符', DELAY: '延误', RETURN: '退件',
-  };
+  const load = useCallback(async () => {
+    const res: any = await request.get('/outbound-exceptions');
+    const rows: ExceptionItem[] = res?.data ?? [];
+    allRef.current = rows;
+    setOpenCount(rows.filter((r) => r.status === 'OPEN').length);
+    return rows;
+  }, []);
 
-  const openCount = [{ status: 'OPEN' }, { status: 'PROCESSING' }].length;
+  useEffect(() => {
+    load().catch(() => {});
+  }, [load]);
+
+  const fetchExceptions = async (params: any) => {
+    const rows = await load();
+    const { current = 1, pageSize = 10, exceptionNo, orderNo, status } = params || {};
+    const match = (hay: string | null | undefined, needle?: string) =>
+      !needle || (hay ?? '').toLowerCase().includes(String(needle).toLowerCase());
+
+    const filtered = rows.filter(
+      (r) => match(r.exceptionNo, exceptionNo) && match(r.orderNo, orderNo) && (!status || r.status === status),
+    );
+    const start = (current - 1) * pageSize;
+    return { data: filtered.slice(start, start + pageSize), success: true, total: filtered.length };
+  };
 
   const columns: ProColumns<ExceptionItem>[] = [
+    {
+      title: '异常单号',
+      dataIndex: 'exceptionNo',
+      copyable: true,
+      width: 170,
+      render: (v) => <span className="font-mono text-sm">{v as string}</span>,
+    },
     {
       title: '关联订单',
       dataIndex: 'orderNo',
       copyable: true,
-      width: 160,
-      render: (v) => <span className="font-mono text-sm">{v as string}</span>,
+      width: 190,
+      render: (_, r) => <span className="font-mono text-sm">{r.orderNo || '—'}</span>,
     },
-    { title: '物流单号', dataIndex: 'trackingNo', width: 150, copyable: true },
-    { title: '客户名称', dataIndex: 'customerName', ellipsis: true },
     {
       title: '异常类型',
-      dataIndex: 'exceptionType',
-      width: 110,
-      render: (v) => (
-        <Tag color={EXCEPTION_COLOR[v as string]} icon={<WarningOutlined />}>
-          {EXCEPTION_LABEL[v as string]}
-        </Tag>
-      ),
+      dataIndex: 'type',
+      width: 140,
+      render: (_, r) =>
+        r.type ? (
+          <Tag color="warning" icon={<WarningOutlined />}>{r.type}</Tag>
+        ) : (
+          '—'
+        ),
     },
     {
-      title: '异常描述',
-      dataIndex: 'description',
+      title: '异常原因',
+      dataIndex: 'reason',
       ellipsis: true,
       search: false,
-    },
-    {
-      title: '损失金额',
-      dataIndex: 'amount',
-      width: 100,
-      search: false,
-      render: (v) => v ? <span className="text-red-500 font-bold">¥{v as number}</span> : '-',
+      render: (_, r) => r.reason || '—',
     },
     {
       title: '处理状态',
       dataIndex: 'status',
-      width: 100,
+      width: 110,
       valueEnum: {
         OPEN: { text: '待处理', status: 'Error' },
-        PROCESSING: { text: '处理中', status: 'Warning' },
         RESOLVED: { text: '已解决', status: 'Success' },
-        CLOSED: { text: '已关闭', status: 'Default' },
       },
     },
-    { title: '报告时间', dataIndex: 'reportedAt', width: 150, search: false },
     {
-      title: '解决时间',
-      dataIndex: 'resolvedAt',
-      width: 150,
+      title: '报告时间',
+      dataIndex: 'createdAt',
+      width: 180,
       search: false,
-      render: (v) => v ? <span className="text-green-600">{v as string}</span> : '-',
-    },
-    {
-      title: '操作',
-      valueType: 'option',
-      width: 130,
-      render: (_, record) => [
-        <a key="view" className="text-primary"><EyeOutlined className="mr-1" />详情</a>,
-        record.status === 'OPEN' && (
-          <a key="handle" className="text-orange-500"><CheckCircleOutlined className="mr-1" />处理</a>
-        ),
-      ],
+      valueType: 'dateTime',
     },
   ];
 
@@ -131,7 +110,7 @@ const OutboundException: React.FC = () => {
     <PageContainer
       header={{
         title: '出货异常处理',
-        subTitle: '管理出库后的物流异常问题件：丢失、破损、错误、退件',
+        subTitle: '出库过程中登记的问题件（由出库单 exception 操作产生）',
       }}
     >
       {openCount > 0 && (
@@ -140,7 +119,7 @@ const OutboundException: React.FC = () => {
           type="error"
           icon={<WarningOutlined />}
           showIcon
-          message={`当前有 ${openCount} 件待处理 / 处理中的异常问题件，请及时跟进！`}
+          message={`当前有 ${openCount} 件待处理的异常问题件，请及时跟进！`}
         />
       )}
 
@@ -150,17 +129,20 @@ const OutboundException: React.FC = () => {
         cardBordered
         request={fetchExceptions}
         rowKey="id"
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1000 }}
         search={{ labelWidth: 'auto', collapsed: false }}
         pagination={{ pageSize: 10 }}
         dateFormatter="string"
-        headerTitle={<Space><WarningOutlined style={{ color: '#ef4444' }} /><span>问题件列表</span></Space>}
+        headerTitle={
+          <Space>
+            <WarningOutlined style={{ color: token.colorError }} />
+            <span>问题件列表</span>
+          </Space>
+        }
         toolBarRender={() => [
           <Button key="export" icon={<ExportOutlined />}>导出报告</Button>,
         ]}
-        rowClassName={(r) =>
-          r.status === 'OPEN' ? 'bg-red-50' : r.status === 'PROCESSING' ? 'bg-orange-50' : ''
-        }
+        rowClassName={(r) => (r.status === 'OPEN' ? 'bg-red-50' : '')}
       />
     </PageContainer>
   );

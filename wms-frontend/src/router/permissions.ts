@@ -90,6 +90,8 @@ export const actionPermissions: Record<string, Role[]> = {
   'wave.manage': OPS, // wave create/release/complete/cancel
   'box.measure': OPS, // boxes/:boxNo/measure PUT
   'box.signOut': OPS, // boxes/sign-out POST
+  'transit.receive': OPS, // transit-orders/:id/receive PUT
+  'transit.ship': OPS, // transit-orders/:id/ship PUT
   'inventory.adjust': OPS, // inventory/adjust
   'customer.write': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'CUSTOMER_SERVICE'],
 };
