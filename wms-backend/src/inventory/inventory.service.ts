@@ -1,5 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { OperationLogService } from '../common/operation-log.service';
+import { InventoryTransactionService } from '../common/inventory-transaction.service';
 import { AdjustInventoryDto } from './dto/adjust-inventory.dto';
 
 interface ListInventoryQuery {
@@ -48,7 +50,11 @@ const ROW_INCLUDE = {
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly opLog: OperationLogService,
+    private readonly invTx: InventoryTransactionService,
+  ) {}
 
   async list(query: ListInventoryQuery) {
     const page = Number(query.page ?? 1);
@@ -119,15 +125,54 @@ export class InventoryService {
       );
     }
 
-    const updated = await this.prisma.inventory.update({
-      where: { id: row.id },
-      data: {
-        availableQty: nextAvailable,
-        totalQty: nextTotal,
-      },
-      include: ROW_INCLUDE,
-    });
+    const reason = body.reason?.trim() || '手工调整';
 
-    return { ...toRow(updated), reason: body.reason ?? 'manual-adjust' };
+    // The mutation and both audit writes share one transaction, so stock can never
+    // move without leaving a trace (manual adjustment is the most audit-sensitive
+    // operation here — it is the only one with no source document behind it).
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.inventory.update({
+        where: { id: row.id },
+        data: {
+          availableQty: nextAvailable,
+          totalQty: nextTotal,
+        },
+        include: ROW_INCLUDE,
+      });
+
+      // qtyBefore/qtyAfter track availableQty, matching the FREEZE/OUTBOUND rows
+      // already written elsewhere so the 库存流水 columns mean the same thing
+      // regardless of transaction type.
+      await this.invTx.record(
+        {
+          warehouseId: row.warehouseId,
+          customerId: row.customerId ?? undefined,
+          productId: row.productId,
+          locationId: row.locationId ?? undefined,
+          batchNo: row.batchNo ?? undefined,
+          type: 'ADJUST',
+          qtyBefore: row.availableQty,
+          qtyChange: deltaQty,
+          qtyAfter: nextAvailable,
+          refType: 'MANUAL_ADJUST',
+          reason,
+        },
+        tx,
+      );
+
+      await this.opLog.log(
+        {
+          entityType: 'INVENTORY',
+          entityId: row.id,
+          action: 'ADJUST',
+          beforeData: { availableQty: row.availableQty, totalQty: row.totalQty },
+          afterData: { availableQty: nextAvailable, totalQty: nextTotal },
+          description: `库存调整 ${body.sku} @ ${body.locationCode}：${deltaQty > 0 ? '+' : ''}${deltaQty}（${reason}）`,
+        },
+        tx,
+      );
+
+      return { ...toRow(updated), reason };
+    });
   }
 }

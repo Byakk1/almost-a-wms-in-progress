@@ -3,6 +3,8 @@ import 'dotenv/config';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { InventoryService } from '../src/inventory/inventory.service';
 import { DashboardService } from '../src/dashboard/dashboard.service';
+import { OperationLogService } from '../src/common/operation-log.service';
+import { InventoryTransactionService } from '../src/common/inventory-transaction.service';
 
 // Verifies the MockDb -> Prisma migration of InventoryService + DashboardService
 // by invoking the REAL service classes against the live database.
@@ -10,7 +12,13 @@ async function main() {
   const prisma = new PrismaService();
   await prisma.$connect();
 
-  const inventory = new InventoryService(prisma);
+  // InventoryService now writes an OperationLog + InventoryTransaction on adjust(),
+  // so it takes both audit collaborators. This script only exercises the read paths.
+  const inventory = new InventoryService(
+    prisma,
+    new OperationLogService(prisma),
+    new InventoryTransactionService(prisma),
+  );
   const dashboard = new DashboardService(prisma);
 
   const [invSummary, invList, stats, util, todos, trend] = await Promise.all([
