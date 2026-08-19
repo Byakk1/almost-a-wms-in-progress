@@ -1,58 +1,35 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { PageContainer } from '@ant-design/pro-components';
-import { Card, Row, Col, Tag, Tooltip, Select, Badge, Space, Statistic, Button, Modal } from 'antd';
 import {
-  EnvironmentOutlined, ReloadOutlined, ExportOutlined
-} from '@ant-design/icons';
-
-const { Option } = Select;
+  Card, Row, Col, Tag, Tooltip, Select, Badge, Space, Statistic, Button,
+  Modal, Empty, Spin, message, theme, Descriptions,
+} from 'antd';
+import { EnvironmentOutlined, ReloadOutlined } from '@ant-design/icons';
+import request from '../../../utils/request';
+import { useCan } from '../../../router/permissions';
 
 type LocationStatus = 'EMPTY' | 'OCCUPIED' | 'RESERVED' | 'DISABLED';
 
-interface Location {
+// Mirrors the Prisma Location row returned by GET /locations.
+// zone / row / col / floor are all nullable in the schema and are null on most
+// real rows, so nothing here may assume a dense row×col×floor grid.
+interface LocationRow {
+  id: string;
   code: string;
-  row: string;
-  col: number;
-  floor: number;
+  warehouseId: string;
+  zone: string | null;
+  row: string | null;
+  col: number | null;
+  floor: number | null;
   status: LocationStatus;
-  sku?: string;
-  qty?: number;
+  updatedAt: string;
 }
 
-// Generate mock warehouse grid
-const generateLocations = (): Location[] => {
-  const rows = ['A', 'B', 'C', 'D', 'E'];
-  const cols = [1, 2, 3, 4, 5, 6, 7, 8];
-  const floors = [1, 2, 3];
-  const statuses: LocationStatus[] = ['OCCUPIED', 'OCCUPIED', 'OCCUPIED', 'EMPTY', 'EMPTY', 'RESERVED', 'DISABLED'];
-  const skus = ['SKU-A001', 'SKU-B002', 'SKU-C003', 'SKU-D004', 'SKU-E005'];
-
-  const locs: Location[] = [];
-  rows.forEach((row) => {
-    cols.forEach((col) => {
-      floors.forEach((floor) => {
-        const status = statuses[Math.floor(Math.random() * statuses.length)];
-        locs.push({
-          code: `${row}-0${col}-0${floor}`,
-          row, col, floor,
-          status,
-          sku: status === 'OCCUPIED' ? skus[Math.floor(Math.random() * skus.length)] : undefined,
-          qty: status === 'OCCUPIED' ? Math.floor(Math.random() * 200) + 10 : undefined,
-        });
-      });
-    });
-  });
-  return locs;
-};
-
-const ALL_LOCATIONS = generateLocations();
-
-const STATUS_COLOR: Record<LocationStatus, string> = {
-  OCCUPIED: '#10b981',
-  EMPTY: '#e2e8f0',
-  RESERVED: '#f97316',
-  DISABLED: '#94a3b8',
-};
+interface WarehouseOpt {
+  id: string;
+  code: string;
+  name: string;
+}
 
 const STATUS_TEXT: Record<LocationStatus, string> = {
   OCCUPIED: '已占用',
@@ -61,205 +38,286 @@ const STATUS_TEXT: Record<LocationStatus, string> = {
   DISABLED: '停用',
 };
 
+const STATUS_TAG: Record<LocationStatus, string> = {
+  OCCUPIED: 'success',
+  EMPTY: 'default',
+  RESERVED: 'warning',
+  DISABLED: 'default',
+};
+
+const UNZONED = '未分区';
+
 const LocationMap: React.FC = () => {
-  const [selectedFloor, setSelectedFloor] = useState<number>(1);
-  const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
-  const [detail, setDetail] = useState<Location | null>(null);
+  const { token } = theme.useToken();
+  const canWrite = useCan('location.write'); // PUT /locations/:id — admin only
 
-  const floorLocations = ALL_LOCATIONS.filter((l) => l.floor === selectedFloor);
-  const filtered = selectedStatus === 'ALL'
-    ? floorLocations
-    : floorLocations.filter((l) => l.status === selectedStatus);
+  const [locations, setLocations] = useState<LocationRow[]>([]);
+  const [warehouses, setWarehouses] = useState<WarehouseOpt[]>([]);
+  const [warehouseId, setWarehouseId] = useState<string>();
+  const [status, setStatus] = useState<string>('ALL');
+  const [loading, setLoading] = useState(false);
+  const [detail, setDetail] = useState<LocationRow | null>(null);
+  const [nextStatus, setNextStatus] = useState<LocationStatus>('EMPTY');
+  const [saving, setSaving] = useState(false);
 
-  const rows = [...new Set(ALL_LOCATIONS.map((l) => l.row))].sort();
-  const cols = [...new Set(ALL_LOCATIONS.map((l) => l.col))].sort((a, b) => a - b);
+  // Status colours follow the active theme so the board tracks the palette.
+  const STATUS_COLOR: Record<LocationStatus, string> = useMemo(
+    () => ({
+      OCCUPIED: token.colorSuccess,
+      EMPTY: token.colorFillSecondary,
+      RESERVED: token.colorWarning,
+      DISABLED: token.colorTextDisabled,
+    }),
+    [token],
+  );
 
-  const occupied = ALL_LOCATIONS.filter((l) => l.status === 'OCCUPIED').length;
-  const empty = ALL_LOCATIONS.filter((l) => l.status === 'EMPTY').length;
-  const reserved = ALL_LOCATIONS.filter((l) => l.status === 'RESERVED').length;
-  const total = ALL_LOCATIONS.filter((l) => l.status !== 'DISABLED').length;
-  const utilRate = Math.round(((occupied + reserved) / total) * 100);
+  const loadLocations = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res: any = await request.get('/locations', {
+        params: {
+          warehouseId: warehouseId || undefined,
+          status: status === 'ALL' ? undefined : status,
+        },
+      });
+      setLocations(res?.data ?? []);
+    } catch {
+      // request.ts interceptor surfaces errors
+    } finally {
+      setLoading(false);
+    }
+  }, [warehouseId, status]);
+
+  useEffect(() => {
+    request
+      .get('/warehouses')
+      .then((res: any) => setWarehouses(res?.data ?? []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadLocations();
+  }, [loadLocations]);
+
+  // Stats are computed over whatever the current filter returned, so the header
+  // always describes the board actually on screen.
+  const stats = useMemo(() => {
+    const by = (s: LocationStatus) => locations.filter((l) => l.status === s).length;
+    const occupied = by('OCCUPIED');
+    const reserved = by('RESERVED');
+    const usable = locations.filter((l) => l.status !== 'DISABLED').length;
+    return {
+      total: locations.length,
+      occupied,
+      empty: by('EMPTY'),
+      reserved,
+      disabled: by('DISABLED'),
+      utilRate: usable ? Math.round(((occupied + reserved) / usable) * 100) : 0,
+    };
+  }, [locations]);
+
+  // Grouped by zone — the only positional field populated on real rows.
+  const zones = useMemo(() => {
+    const map = new Map<string, LocationRow[]>();
+    for (const l of locations) {
+      const key = l.zone || UNZONED;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(l);
+    }
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [locations]);
+
+  const openDetail = (loc: LocationRow) => {
+    setDetail(loc);
+    setNextStatus(loc.status);
+  };
+
+  const saveStatus = async () => {
+    if (!detail) return;
+    setSaving(true);
+    try {
+      await request.put(`/locations/${detail.id}`, { status: nextStatus });
+      message.success(`${detail.code} 状态已更新为${STATUS_TEXT[nextStatus]}`);
+      setDetail(null);
+      loadLocations();
+    } catch {
+      // request.ts interceptor surfaces errors
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <PageContainer
       header={{
         title: '仓库库位大屏',
-        subTitle: '实时查看各库区库位使用状态',
+        subTitle: '按库区查看库位使用状态',
         extra: [
-          <Button key="export" icon={<ExportOutlined />}>导出库位报表</Button>,
-          <Button key="refresh" icon={<ReloadOutlined />} type="primary" style={{ backgroundColor: '#D23148' }}>刷新</Button>,
+          <Button key="refresh" icon={<ReloadOutlined />} type="primary" loading={loading} onClick={loadLocations}>
+            刷新
+          </Button>,
         ],
       }}
     >
-      {/* Summary Cards */}
-      <Row gutter={16} className="mb-4">
+      <Row gutter={[16, 16]} className="mb-4">
         {[
-          { label: '总库位', value: total, color: '#1e293b' },
-          { label: '已占用', value: occupied, color: '#10b981' },
-          { label: '空闲', value: empty, color: '#64748b' },
-          { label: '预留', value: reserved, color: '#f97316' },
-          { label: '利用率', value: `${utilRate}%`, color: '#D23148' },
+          { label: '库位总数', value: stats.total },
+          { label: '已占用', value: stats.occupied, color: token.colorSuccess },
+          { label: '空闲', value: stats.empty },
+          { label: '预留', value: stats.reserved, color: token.colorWarning },
+          { label: '停用', value: stats.disabled, color: token.colorTextDisabled },
+          { label: '利用率', value: `${stats.utilRate}%`, color: token.colorPrimary },
         ].map((s) => (
-          <Col key={s.label} xs={12} sm={8} md={4} lg={4}>
+          <Col key={s.label} xs={12} sm={8} md={4}>
             <Card size="small" className="text-center shadow-sm">
               <Statistic title={s.label} value={s.value} valueStyle={{ color: s.color, fontSize: 22 }} />
             </Card>
           </Col>
         ))}
-        <Col xs={12} sm={8} md={4} lg={4} className="flex items-center">
-          <Badge color="#10b981" text="占用" className="mr-3" />
-          <Badge color="#e2e8f0" text="空闲" className="mr-3" />
-          <Badge color="#f97316" text="预留" className="mr-3" />
-          <Badge color="#94a3b8" text="停用" />
-        </Col>
       </Row>
 
-      {/* Controls */}
       <Card className="mb-4 shadow-sm" size="small">
-        <Space>
-          <span className="font-medium text-slate-600">楼层：</span>
-          {[1, 2, 3].map((f) => (
-            <Button
-              key={f}
-              size="small"
-              type={selectedFloor === f ? 'primary' : 'default'}
-              onClick={() => setSelectedFloor(f)}
-              style={selectedFloor === f ? { backgroundColor: '#D23148' } : {}}
-            >
-              F{f}
-            </Button>
-          ))}
-          <span className="ml-4 font-medium text-slate-600">筛选状态：</span>
-          <Select value={selectedStatus} onChange={setSelectedStatus} size="small" style={{ width: 110 }}>
-            <Option value="ALL">全部</Option>
-            <Option value="OCCUPIED">已占用</Option>
-            <Option value="EMPTY">空闲</Option>
-            <Option value="RESERVED">预留</Option>
-            <Option value="DISABLED">停用</Option>
-          </Select>
+        <Space wrap>
+          <span className="font-medium text-slate-600">仓库：</span>
+          <Select
+            allowClear
+            placeholder="全部仓库"
+            style={{ width: 220 }}
+            value={warehouseId}
+            onChange={setWarehouseId}
+            options={warehouses.map((w) => ({
+              value: w.id,
+              label: `${w.code}${w.name ? ` · ${w.name}` : ''}`,
+            }))}
+          />
+          <span className="ml-4 font-medium text-slate-600">状态：</span>
+          <Select
+            value={status}
+            onChange={setStatus}
+            style={{ width: 120 }}
+            options={[
+              { value: 'ALL', label: '全部' },
+              { value: 'OCCUPIED', label: '已占用' },
+              { value: 'EMPTY', label: '空闲' },
+              { value: 'RESERVED', label: '预留' },
+              { value: 'DISABLED', label: '停用' },
+            ]}
+          />
+          <Space className="ml-4" size="middle">
+            <Badge color={STATUS_COLOR.OCCUPIED} text="占用" />
+            <Badge color={STATUS_COLOR.EMPTY} text="空闲" />
+            <Badge color={STATUS_COLOR.RESERVED} text="预留" />
+            <Badge color={STATUS_COLOR.DISABLED} text="停用" />
+          </Space>
         </Space>
       </Card>
 
-      {/* Location Grid */}
-      <Card className="shadow-sm" title={<Space><EnvironmentOutlined style={{ color: '#D23148' }} /><span>F{selectedFloor} 层库位图</span></Space>}>
-        {/* Column headers */}
-        <div className="mb-3">
-          <div style={{ display: 'grid', gridTemplateColumns: `60px repeat(${cols.length}, 1fr)`, gap: 4 }}>
-            <div />
-            {cols.map((c) => (
-              <div key={c} className="text-center text-xs text-slate-400 font-medium">{c}列</div>
-            ))}
-          </div>
-        </div>
-
-        {rows.map((row) => (
-          <div key={row} className="mb-2">
-            <div style={{ display: 'grid', gridTemplateColumns: `60px repeat(${cols.length}, 1fr)`, gap: 4, alignItems: 'center' }}>
-              <div className="text-sm font-bold text-slate-600 text-center">{row} 区</div>
-              {cols.map((col) => {
-                const loc = filtered.find((l) => l.row === row && l.col === col);
-                const allFloorLoc = floorLocations.find((l) => l.row === row && l.col === col);
-                if (!loc && selectedStatus !== 'ALL') {
-                  // Show dimmed placeholder when filtered
-                  return (
-                    <div
-                      key={col}
-                      style={{
-                        height: 40,
-                        borderRadius: 4,
-                        backgroundColor: '#f1f5f9',
-                        border: '1px dashed #cbd5e1',
-                        opacity: 0.4,
-                      }}
-                    />
-                  );
-                }
-                const display = loc || allFloorLoc;
-                if (!display) return <div key={col} style={{ height: 40 }} />;
-                return (
+      <Spin spinning={loading}>
+        {zones.length === 0 ? (
+          <Card className="shadow-sm">
+            <Empty description="当前筛选条件下没有库位" />
+          </Card>
+        ) : (
+          zones.map(([zone, list]) => (
+            <Card
+              key={zone}
+              className="shadow-sm mb-4"
+              title={
+                <Space>
+                  <EnvironmentOutlined style={{ color: token.colorPrimary }} />
+                  <span>{zone === UNZONED ? UNZONED : `${zone} 区`}</span>
+                  <Tag>{list.length}</Tag>
+                </Space>
+              }
+            >
+              <div className="flex flex-wrap gap-2">
+                {list.map((loc) => (
                   <Tooltip
-                    key={col}
+                    key={loc.id}
                     title={
                       <div>
-                        <div className="font-bold">{display.code}</div>
-                        <div>状态：{STATUS_TEXT[display.status]}</div>
-                        {display.sku && <div>SKU: {display.sku}</div>}
-                        {display.qty && <div>库存: {display.qty} 件</div>}
+                        <div className="font-bold">{loc.code}</div>
+                        <div>状态：{STATUS_TEXT[loc.status]}</div>
+                        {loc.row && <div>排：{loc.row}</div>}
+                        {loc.col != null && <div>列：{loc.col}</div>}
                       </div>
                     }
                   >
                     <div
-                      onClick={() => setDetail(display)}
+                      onClick={() => openDetail(loc)}
                       style={{
-                        height: 40,
-                        borderRadius: 4,
-                        backgroundColor: STATUS_COLOR[display.status],
-                        border: `2px solid ${display.status === 'OCCUPIED' ? '#059669' : 'transparent'}`,
+                        minWidth: 92,
+                        height: 46,
+                        padding: '0 10px',
+                        borderRadius: token.borderRadius,
+                        backgroundColor: STATUS_COLOR[loc.status],
+                        color: loc.status === 'EMPTY' ? token.colorTextSecondary : '#fff',
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: 10,
-                        color: display.status === 'EMPTY' ? '#94a3b8' : '#fff',
+                        fontSize: 12,
                         fontWeight: 500,
-                        transition: 'transform 0.1s, box-shadow 0.1s',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-                      }}
-                      onMouseEnter={(e) => {
-                        (e.currentTarget as HTMLElement).style.transform = 'scale(1.08)';
-                        (e.currentTarget as HTMLElement).style.zIndex = '10';
-                      }}
-                      onMouseLeave={(e) => {
-                        (e.currentTarget as HTMLElement).style.transform = '';
-                        (e.currentTarget as HTMLElement).style.zIndex = '';
+                        boxShadow: token.boxShadowTertiary,
                       }}
                     >
-                      {display.status === 'EMPTY' ? '空' : display.code.split('-')[1]}
+                      {loc.code}
                     </div>
                   </Tooltip>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </Card>
+                ))}
+              </div>
+            </Card>
+          ))
+        )}
+      </Spin>
 
-      {/* Detail Modal */}
       <Modal
-        title={<Space><EnvironmentOutlined style={{ color: '#D23148' }} />{detail?.code}</Space>}
+        title={
+          <Space>
+            <EnvironmentOutlined style={{ color: token.colorPrimary }} />
+            {detail?.code}
+          </Space>
+        }
         open={!!detail}
         onCancel={() => setDetail(null)}
+        destroyOnHidden
         footer={[
           <Button key="close" onClick={() => setDetail(null)}>关闭</Button>,
-          detail?.status === 'EMPTY' && (
-            <Button key="assign" type="primary" style={{ backgroundColor: '#D23148' }}>
-              分配此库位
-            </Button>
-          ),
+          <Button
+            key="save"
+            type="primary"
+            loading={saving}
+            disabled={!canWrite || nextStatus === detail?.status}
+            onClick={saveStatus}
+          >
+            保存状态
+          </Button>,
         ]}
       >
         {detail && (
-          <div className="space-y-3">
-            <Row gutter={16}>
-              <Col span={12}><Statistic title="库区" value={detail.row} /></Col>
-              <Col span={12}><Statistic title="列号" value={detail.col} /></Col>
-            </Row>
-            <Row gutter={16}>
-              <Col span={12}><Statistic title="楼层" value={`F${detail.floor}`} /></Col>
-              <Col span={12}>
-                <div className="text-xs text-slate-400 mb-1">状态</div>
-                <Tag color={
-                  detail.status === 'OCCUPIED' ? 'success' :
-                  detail.status === 'EMPTY' ? 'default' :
-                  detail.status === 'RESERVED' ? 'warning' : 'default'
-                }>{STATUS_TEXT[detail.status]}</Tag>
-              </Col>
-            </Row>
-            {detail.sku && <Row gutter={16}>
-              <Col span={12}><Statistic title="当前SKU" value={detail.sku} /></Col>
-              <Col span={12}><Statistic title="库存量" value={`${detail.qty} 件`} /></Col>
-            </Row>}
-          </div>
+          <Descriptions column={2} size="small" bordered>
+            <Descriptions.Item label="库位编码" span={2}>{detail.code}</Descriptions.Item>
+            <Descriptions.Item label="库区">{detail.zone || '—'}</Descriptions.Item>
+            <Descriptions.Item label="楼层">{detail.floor ?? '—'}</Descriptions.Item>
+            <Descriptions.Item label="排">{detail.row || '—'}</Descriptions.Item>
+            <Descriptions.Item label="列">{detail.col ?? '—'}</Descriptions.Item>
+            <Descriptions.Item label="当前状态" span={2}>
+              <Tag color={STATUS_TAG[detail.status]}>{STATUS_TEXT[detail.status]}</Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="变更为" span={2}>
+              <Select
+                value={nextStatus}
+                onChange={(v) => setNextStatus(v as LocationStatus)}
+                disabled={!canWrite}
+                style={{ width: 160 }}
+                options={(Object.keys(STATUS_TEXT) as LocationStatus[]).map((s) => ({
+                  value: s,
+                  label: STATUS_TEXT[s],
+                }))}
+              />
+              {!canWrite && <span className="ml-3 text-xs text-slate-400">仅管理员可修改</span>}
+            </Descriptions.Item>
+          </Descriptions>
         )}
       </Modal>
     </PageContainer>
