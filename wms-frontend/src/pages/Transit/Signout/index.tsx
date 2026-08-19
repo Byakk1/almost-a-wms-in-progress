@@ -6,6 +6,8 @@ import {
 } from 'antd';
 import { ScanOutlined, SendOutlined, CheckCircleOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import request from '../../../utils/request';
+import { useCan } from '../../../router/permissions';
 
 const { Option } = Select;
 
@@ -21,16 +23,22 @@ interface SignoutBox {
   scannedAt: string;
 }
 
-const MOCK_BOXES: Record<string, Omit<SignoutBox, 'key' | 'scannedAt'>> = {
-  'BOX-260304-001': { boxNo: 'BOX-260304-001', orderNo: 'TR-260302-001', customerName: '深圳大卖贸易', pieces: 3, weight: 12.5, destination: 'US', courier: 'FedEx' },
-  'BOX-260304-002': { boxNo: 'BOX-260304-002', orderNo: 'TR-260302-001', customerName: '深圳大卖贸易', pieces: 4, weight: 18.0, destination: 'US', courier: 'FedEx' },
-  'BOX-260304-003': { boxNo: 'BOX-260304-003', orderNo: 'TR-260302-002', customerName: 'Global E-commerce', pieces: 5, weight: 22.0, destination: 'UK', courier: 'DHL' },
-  'BOX-260304-004': { boxNo: 'BOX-260304-004', orderNo: 'TR-260302-002', customerName: 'Global E-commerce', pieces: 2, weight: 8.5, destination: 'UK', courier: 'DHL' },
-};
+// Subset of the Box returned by GET /boxes (orderNo/customerName are flattened by the backend).
+interface BackendBox {
+  boxNo: string;
+  orderNo: string;
+  customerName: string;
+  pieces: number;
+  actualWeight?: number;
+  chargeWeight?: number;
+  destination: string;
+  courier?: string;
+}
 
 const TransitSignout: React.FC = () => {
   const navigate = useNavigate();
   const scanRef = useRef<any>(null);
+  const canSignOut = useCan('box.signOut'); // POST /boxes/sign-out — OPS roles only
   const [scanValue, setScanValue] = useState('');
   const [boxes, setBoxes] = useState<SignoutBox[]>([]);
   const [lastStatus, setLastStatus] = useState<'idle' | 'ok' | 'error' | 'dup'>('idle');
@@ -41,37 +49,62 @@ const TransitSignout: React.FC = () => {
 
   useEffect(() => { scanRef.current?.focus(); }, []);
 
-  const handleScan = (val: string) => {
+  const handleScan = async (val: string) => {
     const v = val.trim();
     if (!v) return;
-    const box = MOCK_BOXES[v];
-    if (!box) {
-      setLastStatus('error');
-      setLastMsg(`❌ 未知箱号：${v}`);
+    try {
+      const res: any = await request.get('/boxes', { params: { boxNo: v, status: 'MEASURED' } });
+      const box: BackendBox | undefined = res?.data?.[0];
+      if (!box) {
+        setLastStatus('error');
+        setLastMsg(`❌ 未知箱号：${v}`);
+        setScanValue('');
+        return;
+      }
+      if (boxes.find((b) => b.boxNo === v)) {
+        setLastStatus('dup');
+        setLastMsg(`⚠️ 重复扫描：${v}`);
+        setScanValue('');
+        return;
+      }
+      const row: SignoutBox = {
+        key: `${v}-${Date.now()}`,
+        boxNo: box.boxNo,
+        orderNo: box.orderNo,
+        customerName: box.customerName,
+        pieces: box.pieces,
+        weight: box.chargeWeight ?? box.actualWeight ?? 0, // 计费重优先
+        destination: box.destination,
+        courier: box.courier ?? '',
+        scannedAt: new Date().toLocaleTimeString('zh-CN'),
+      };
+      setBoxes((prev) => [row, ...prev]);
+      setLastStatus('ok');
+      setLastMsg(`✅ ${v} — ${row.orderNo} — ${row.destination} → ${row.courier}`);
       setScanValue('');
-      return;
+    } catch {
+      // request.ts interceptor surfaces errors
     }
-    if (boxes.find((b) => b.boxNo === v)) {
-      setLastStatus('dup');
-      setLastMsg(`⚠️ 重复扫描：${v}`);
-      setScanValue('');
-      return;
-    }
-    setBoxes((prev) => [{ ...box, key: `${v}-${Date.now()}`, scannedAt: new Date().toLocaleTimeString('zh-CN') }, ...prev]);
-    setLastStatus('ok');
-    setLastMsg(`✅ ${v} — ${box.orderNo} — ${box.destination} → ${box.courier}`);
-    setScanValue('');
   };
 
   const handleSubmit = async () => {
     if (boxes.length === 0) { message.warning('请先扫描箱子'); return; }
     if (!logisticsNo) { message.warning('请填写物流单号'); return; }
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    setSubmitting(false);
-    message.success(`中转签出完成！${boxes.length} 箱，物流单号：${logisticsNo}`);
-    setBoxes([]); setLogisticsNo(''); setCourier(''); setLastStatus('idle');
-    scanRef.current?.focus();
+    try {
+      const res: any = await request.post('/boxes/sign-out', {
+        boxNos: boxes.map((b) => b.boxNo),
+        courier: courier || undefined,
+        trackingNo: logisticsNo,
+      });
+      message.success(`中转签出完成！${res?.data?.count ?? boxes.length} 箱，物流单号：${logisticsNo}`);
+      setBoxes([]); setLogisticsNo(''); setCourier(''); setLastStatus('idle');
+      scanRef.current?.focus();
+    } catch {
+      // request.ts interceptor surfaces errors
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const alertType: Record<string, 'success' | 'error' | 'warning' | 'info'> = { ok: 'success', error: 'error', dup: 'warning', idle: 'info' };
@@ -116,7 +149,7 @@ const TransitSignout: React.FC = () => {
               <Col span={8}><Statistic title="件数" value={totalPcs} valueStyle={{ fontSize: 22 }} /></Col>
               <Col span={8}><Statistic title="kg" value={totalWt.toFixed(1)} valueStyle={{ fontSize: 22 }} /></Col>
             </Row>
-            <Button type="primary" block size="large" icon={<SendOutlined />} loading={submitting} disabled={boxes.length === 0} onClick={handleSubmit} style={{ backgroundColor: '#D23148', height: 48 }}>
+            <Button type="primary" block size="large" icon={<SendOutlined />} loading={submitting} disabled={boxes.length === 0 || !canSignOut} onClick={handleSubmit} style={{ backgroundColor: '#D23148', height: 48 }}>
               确认签出 ({boxes.length} 箱)
             </Button>
           </Card>
@@ -127,7 +160,6 @@ const TransitSignout: React.FC = () => {
               <div className="text-center py-16 text-gray-400">
                 <SendOutlined style={{ fontSize: 48, opacity: 0.25 }} />
                 <p className="mt-3">请扫描箱子条码</p>
-                <p className="text-xs mt-1">测试箱号：BOX-260304-001 ～ BOX-260304-004</p>
               </div>
             ) : (
               <Table dataSource={boxes} columns={columns} size="small" rowKey="key" pagination={false} scroll={{ y: 480 }} />

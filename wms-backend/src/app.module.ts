@@ -22,6 +22,7 @@ import { WarehousesModule } from './warehouses/warehouses.module';
 import { FeeModule } from './fee/fee.module';
 import { BillsModule } from './bills/bills.module';
 import { TransitOrdersModule } from './transit-orders/transit-orders.module';
+import { BoxesModule } from './boxes/boxes.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -54,6 +55,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     FeeModule,
     BillsModule,
     TransitOrdersModule,
+    BoxesModule,
   ],
   controllers: [AppController],
   providers: [

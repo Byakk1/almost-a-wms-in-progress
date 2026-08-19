@@ -61,3 +61,12 @@ export const WAVE_TRANSITIONS: TransitionMap<string> = {
   COMPLETED:  [],  // terminal
   CANCELLED:  [],  // terminal
 };
+
+// ─── Box (carton) State Machine ─────────────────────────────────────
+
+export const BOX_TRANSITIONS: TransitionMap<string> = {
+  PENDING:     ['MEASURED'],
+  MEASURED:    ['SIGNED_OUT'],
+  SIGNED_OUT:  [],  // terminal
+};
+
