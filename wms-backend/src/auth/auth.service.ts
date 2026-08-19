@@ -1,7 +1,21 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { Role } from '@prisma/client';
+
+/**
+ * Cost factor for password hashing. 10 is the common default — ~50ms per hash on
+ * commodity hardware, which is slow enough to make offline cracking expensive and
+ * fast enough not to be a login bottleneck.
+ *
+ * NOTE: `User.passwordHash` previously stored the password in CLEARTEXT despite the
+ * column name, and was compared with `!==`. Existing rows must be migrated with
+ * `scripts/hash-existing-passwords.ts` before this code can authenticate them;
+ * there is deliberately no plaintext fallback, since one would keep accepting
+ * unhashed values indefinitely and negate the fix.
+ */
+const BCRYPT_ROUNDS = 10;
 
 type SafeUser = {
   id: string;
@@ -25,7 +39,7 @@ export class AuthService {
       where: { email },
     });
 
-    if (!user || user.passwordHash !== password) {
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       throw new UnauthorizedException('邮箱或密码错误');
     }
 
@@ -134,13 +148,13 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('用户不存在');
     }
-    if (user.passwordHash !== oldPassword) {
+    if (!(await bcrypt.compare(oldPassword, user.passwordHash))) {
       throw new UnauthorizedException('旧密码错误');
     }
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: newPassword },
+      data: { passwordHash: await bcrypt.hash(newPassword, BCRYPT_ROUNDS) },
     });
 
     return true;
