@@ -471,6 +471,7 @@ model TransitOrder {
   updatedAt   DateTime  @updatedAt
 
   items TransitItem[]
+  boxes Box[]
 }
 
 model TransitItem {
@@ -481,6 +482,33 @@ model TransitItem {
   product        Product      @relation(fields: [productId], references: [id])
   expectedQty    Int
   actualQty      Int          @default(0)
+}
+
+// ─── Box (carton) — measured at outbound/transit, then signed out to a carrier ───
+model Box {
+  id             String       @id @default(cuid())
+  boxNo          String       @unique
+  transitOrderId String
+  transitOrder   TransitOrder @relation(fields: [transitOrderId], references: [id], onDelete: Cascade)
+  pieces         Int          @default(0) // # of items packed in this box
+  // Measurement (cm / kg). volWeight = L*W*H/5000; chargeWeight = max(volWeight, actualWeight).
+  length         Float?
+  width          Float?
+  height         Float?
+  actualWeight   Float?
+  volWeight      Float?
+  chargeWeight   Float?
+  status         String       @default("PENDING") // PENDING -> MEASURED -> SIGNED_OUT
+  destination    String?
+  courier        String?
+  trackingNo     String?
+  measuredAt     DateTime?
+  signedOutAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([transitOrderId])
+  @@index([status])
 }
 
 // ─── Audit Trail ────────────────────────────────────────────────────
