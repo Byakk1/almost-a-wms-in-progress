@@ -83,6 +83,7 @@ export const actionPermissions: Record<string, Role[]> = {
   'outbound.create': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'CUSTOMER_SERVICE'], // outbound-orders POST
   'outbound.bulkImport': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'CUSTOMER_SERVICE'], // bulk-import POST
   'outbound.sign': ADMIN, // outbound-orders/:id/sign POST
+  'outbound.pack': OPS, // outbound-orders/:id/start-packing · /pack · /complete-packing POST
   'dictionary.write': ADMIN, // dictionary create/update/delete
   'bill.generate': ['SUPER_ADMIN', 'FINANCE', 'CUSTOMER_SERVICE'], // bills/generate
   'location.write': ADMIN, // locations create/update/delete

@@ -1,396 +1,318 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { PageContainer } from '@ant-design/pro-components';
 import {
-  Card, Row, Col, Input, Button, Table, Tag, Alert,
-  Space, Select, Form, InputNumber, Divider, message,
-  Steps, Descriptions, Badge
+  Card, Row, Col, Input, Button, Table, Tag, Alert, Space, Select,
+  Divider, Descriptions, Badge, Result, Statistic, theme,
 } from 'antd';
 import {
   ScanOutlined, CheckCircleOutlined, BoxPlotOutlined,
-  PrinterOutlined, ArrowLeftOutlined, TruckOutlined,
-  ScissorOutlined
+  ArrowLeftOutlined, ScissorOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import request from '../../../utils/request';
+import { useCan } from '../../../router/permissions';
 
-const { Option } = Select;
-
-interface PackingOrderItem {
+interface PackItem {
   sku: string;
   productName: string;
   requiredQty: number;
-  scannedQty: number;
-  status: 'PENDING' | 'DONE' | 'OVER';
+  pickedQty: number;
+  packedQty: number;
 }
 
-// Mock order data (normally loaded by order number)
-const MOCK_ORDER: {
+interface OrderSummary {
+  id: string;
   orderNo: string;
   customerName: string;
-  destination: string;
-  items: PackingOrderItem[];
-} = {
-  orderNo: 'ORD-20260302-001',
-  customerName: 'Global E-commerce Ltd.',
-  destination: 'US - Los Angeles',
-  items: [
-    { sku: 'SKU-A001', productName: 'iPhone 15 Pro 手机壳', requiredQty: 3, scannedQty: 0, status: 'PENDING' },
-    { sku: 'SKU-B002', productName: '无线蓝牙耳机 AirPods 兼容款', requiredQty: 1, scannedQty: 0, status: 'PENDING' },
-    { sku: 'SKU-C003', productName: 'USB-C 快充线 1m', requiredQty: 2, scannedQty: 0, status: 'PENDING' },
-  ],
-};
+  status: string;
+  shipToCountry?: string | null;
+  shipToCity?: string | null;
+}
 
-// Barcode → SKU map
-const BARCODE_SKU_MAP: Record<string, string> = {
-  'SF123456789': 'SKU-A001',
-  'SF123456790': 'SKU-A001',
-  'SF123456791': 'SKU-A001',
-  'JD987654321': 'SKU-B002',
-  'YT556677889': 'SKU-C003',
-  'YT556677890': 'SKU-C003',
-};
-
-const COURIERS = [
-  { label: 'FedEx 国际快递', value: 'FEDEX' },
-  { label: 'UPS 标准', value: 'UPS' },
-  { label: 'DHL Express', value: 'DHL' },
-  { label: '美森快船', value: 'MAESK' },
-  { label: '盐田港快船', value: 'YANTIAN' },
-];
-
-const PACKAGE_TYPES = [
-  { label: '小箱 (30×20×15cm)', value: 'S' },
-  { label: '中箱 (40×30×25cm)', value: 'M' },
-  { label: '大箱 (60×40×35cm)', value: 'L' },
-  { label: '特大箱 (80×60×50cm)', value: 'XL' },
-  { label: '自定义', value: 'CUSTOM' },
-];
+interface OrderDetail extends OrderSummary {
+  items: PackItem[];
+}
 
 const PackingWorkbench: React.FC = () => {
   const navigate = useNavigate();
   const scanRef = useRef<any>(null);
-  const [form] = Form.useForm();
+  const { token } = theme.useToken();
+  const canPack = useCan('outbound.pack'); // start-packing / pack / complete-packing — OPS
 
-  const [currentStep, setCurrentStep] = useState(0); // 0: scan, 1: package info, 2: done
-  const [orderItems, setOrderItems] = useState<PackingOrderItem[]>(MOCK_ORDER.items);
+  const [queue, setQueue] = useState<OrderSummary[]>([]);
+  const [order, setOrder] = useState<OrderDetail | null>(null);
   const [scanValue, setScanValue] = useState('');
-  const [lastScanStatus, setLastScanStatus] = useState<'idle' | 'ok' | 'error' | 'over'>('idle');
-  const [lastScanMsg, setLastScanMsg] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [lastStatus, setLastStatus] = useState<'idle' | 'ok' | 'error'>('idle');
+  const [lastMsg, setLastMsg] = useState('');
+  const [loadingQueue, setLoadingQueue] = useState(false);
+  const [packing, setPacking] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+
+  // Packable orders are PICKED (not yet started) plus PACKING (resume a session
+  // someone left open). The list endpoint filters one status at a time.
+  const loadQueue = useCallback(async () => {
+    setLoadingQueue(true);
+    try {
+      const [picked, inProgress] = await Promise.all([
+        request.get('/outbound-orders', { params: { status: 'PICKED', pageSize: 100 } }),
+        request.get('/outbound-orders', { params: { status: 'PACKING', pageSize: 100 } }),
+      ]);
+      setQueue([...((picked as any)?.data ?? []), ...((inProgress as any)?.data ?? [])]);
+    } catch {
+      // request.ts interceptor surfaces errors
+    } finally {
+      setLoadingQueue(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (currentStep === 0) scanRef.current?.focus();
-  }, [currentStep]);
+    loadQueue();
+  }, [loadQueue]);
 
-  const allDone = orderItems.every((i) => i.status === 'DONE');
-  const hasOver = orderItems.some((i) => i.status === 'OVER');
+  const selectOrder = async (id: string) => {
+    const picked = queue.find((o) => o.id === id);
+    if (!picked) return;
+    try {
+      // PICKED -> PACKING. An order already PACKING is resumed as-is, since
+      // start-packing would be rejected by the state machine.
+      if (picked.status === 'PICKED') {
+        await request.post(`/outbound-orders/${id}/start-packing`);
+      }
+      const res: any = await request.get(`/outbound-orders/${id}`);
+      setOrder(res?.data ?? null);
+      setLastStatus('ok');
+      setLastMsg(`✅ 已进入打包：${picked.orderNo}`);
+      scanRef.current?.focus();
+    } catch {
+      // request.ts interceptor surfaces errors
+    }
+  };
 
-  const handleScan = (barcode: string) => {
-    const trimmed = barcode.trim();
-    if (!trimmed) return;
+  // Scanning matches the order's own SKUs: GET /products has no barcode filter,
+  // so a barcode -> SKU lookup is not available server-side.
+  const handleScan = async (val: string) => {
+    const sku = val.trim();
+    if (!sku || !order) return;
 
-    const sku = BARCODE_SKU_MAP[trimmed];
-    if (!sku) {
-      setLastScanStatus('error');
-      setLastScanMsg(`❌ 未知条码：${trimmed}`);
-      message.error(`未识别的条码：${trimmed}`);
+    const item = order.items.find((i) => i.sku === sku);
+    if (!item) {
+      setLastStatus('error');
+      setLastMsg(`❌ 订单 ${order.orderNo} 中没有该 SKU：${sku}`);
       setScanValue('');
       return;
     }
 
-    const itemIndex = orderItems.findIndex((i) => i.sku === sku);
-    if (itemIndex === -1) {
-      setLastScanStatus('error');
-      setLastScanMsg(`⚠️ 该商品 (${sku}) 不在当前订单中！`);
+    setPacking(true);
+    try {
+      // The server owns packedQty and rejects over-packing, so its response is
+      // the source of truth rather than a local counter.
+      const res: any = await request.post(`/outbound-orders/${order.id}/pack`, { sku, qty: 1 });
+      const packedQty = res?.data?.packedQty ?? item.packedQty + 1;
+      setOrder((prev) =>
+        prev ? { ...prev, items: prev.items.map((i) => (i.sku === sku ? { ...i, packedQty } : i)) } : prev,
+      );
+      setLastStatus('ok');
+      setLastMsg(`✅ ${sku} 已打包 ${packedQty}/${item.requiredQty}`);
+    } catch {
+      // interceptor surfaces the reason (e.g. 打包数量超出需求数量)
+      setLastStatus('error');
+      setLastMsg(`❌ ${sku} 打包失败`);
+    } finally {
+      setPacking(false);
       setScanValue('');
-      return;
+      scanRef.current?.focus();
     }
-
-    const item = orderItems[itemIndex];
-    if (item.scannedQty >= item.requiredQty) {
-      setLastScanStatus('over');
-      setLastScanMsg(`🚨 超量！${item.productName} 已达到 ${item.requiredQty} 件要求，请勿多扫`);
-      message.error(`超量扫描：${item.productName}`);
-      setScanValue('');
-      return;
-    }
-
-    const newQty = item.scannedQty + 1;
-    const newStatus: PackingOrderItem['status'] = newQty >= item.requiredQty ? 'DONE' : 'PENDING';
-    const updated = [...orderItems];
-    updated[itemIndex] = { ...item, scannedQty: newQty, status: newStatus };
-    setOrderItems(updated);
-
-    const msg = newStatus === 'DONE'
-      ? `✅ ${item.productName} 已完成 (${newQty}/${item.requiredQty})`
-      : `📦 ${item.productName}：${newQty}/${item.requiredQty}`;
-    setLastScanStatus('ok');
-    setLastScanMsg(msg);
-    setScanValue('');
   };
 
-  const handlePackingSubmit = async () => {
-    const values = form.getFieldsValue();
-    if (!values.courier || !values.packageType || !values.weight) {
-      message.error('请填写完整的包材和重量信息');
-      return;
+  const allPacked = !!order && order.items.every((i) => i.packedQty >= i.requiredQty);
+
+  const completePacking = async () => {
+    if (!order) return;
+    setCompleting(true);
+    try {
+      await request.post(`/outbound-orders/${order.id}/complete-packing`);
+      setDone(order.orderNo);
+      setOrder(null);
+      loadQueue();
+    } catch {
+      // request.ts interceptor surfaces errors
+    } finally {
+      setCompleting(false);
     }
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    setIsSubmitting(false);
-    setCurrentStep(2);
-    message.success('打包完成！面单已生成');
   };
 
-  const alertColorMap = {
-    ok: 'success' as const,
-    error: 'error' as const,
-    over: 'error' as const,
-    idle: 'info' as const,
-  };
+  const totalRequired = order?.items.reduce((s, i) => s + i.requiredQty, 0) ?? 0;
+  const totalPacked = order?.items.reduce((s, i) => s + i.packedQty, 0) ?? 0;
 
-  const itemColumns = [
-    { title: 'SKU', dataIndex: 'sku', width: 110 },
-    { title: '商品名称', dataIndex: 'productName', ellipsis: true },
+  const columns = [
     {
-      title: '要求数量',
-      dataIndex: 'requiredQty',
-      width: 90,
-      render: (v: number) => <span className="font-bold">{v}</span>,
+      title: 'SKU', dataIndex: 'sku', width: 160,
+      render: (v: string) => <code className="text-xs bg-slate-100 px-1 rounded">{v}</code>,
     },
+    { title: '商品名称', dataIndex: 'productName', ellipsis: true },
+    { title: '需求', dataIndex: 'requiredQty', width: 80 },
+    { title: '已拣', dataIndex: 'pickedQty', width: 80 },
     {
-      title: '已扫数量',
-      dataIndex: 'scannedQty',
-      width: 90,
-      render: (v: number, record: PackingOrderItem) => (
-        <span className={v >= record.requiredQty ? 'text-green-600 font-bold' : 'text-orange-500 font-bold'}>{v}</span>
+      title: '已打包', dataIndex: 'packedQty', width: 90,
+      render: (v: number, r: PackItem) => (
+        <span style={{ color: v >= r.requiredQty ? token.colorSuccess : token.colorWarning, fontWeight: 600 }}>{v}</span>
       ),
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      width: 100,
-      render: (v: string) => {
-        if (v === 'DONE') return <Tag color="success" icon={<CheckCircleOutlined />}>已完成</Tag>;
-        if (v === 'OVER') return <Tag color="error">超量</Tag>;
-        return <Tag color="default">待扫描</Tag>;
-      },
+      title: '状态', width: 100,
+      render: (_: any, r: PackItem) =>
+        r.packedQty >= r.requiredQty
+          ? <Tag color="success" icon={<CheckCircleOutlined />}>完成</Tag>
+          : <Tag color="warning">待打包</Tag>,
     },
   ];
+
+  if (done) {
+    return (
+      <PageContainer>
+        <Result
+          status="success"
+          title={`${done} 打包完成`}
+          subTitle="订单状态已更新为已打包（PACKED），可继续下一单"
+          extra={[
+            <Button key="next" type="primary" onClick={() => { setDone(null); setLastStatus('idle'); loadQueue(); }}>
+              打包下一单
+            </Button>,
+            <Button key="back" onClick={() => navigate('/outbound/picking')}>返回拣货列表</Button>,
+          ]}
+        />
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer
       header={{
-        title: '按单打包工作台',
-        subTitle: `订单：${MOCK_ORDER.orderNo}`,
+        title: '按单打包台',
+        subTitle: '选择已拣货订单，逐 SKU 扫码打包',
         extra: [
           <Button key="back" icon={<ArrowLeftOutlined />} onClick={() => navigate('/outbound/picking')}>
-            返回列表
+            返回拣货列表
           </Button>,
         ],
       }}
     >
-      {/* Order Info Banner */}
-      <Card size="small" className="mb-4 bg-slate-50 border-slate-200">
-        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
-          <Descriptions.Item label="订单号"><strong>{MOCK_ORDER.orderNo}</strong></Descriptions.Item>
-          <Descriptions.Item label="客户">{MOCK_ORDER.customerName}</Descriptions.Item>
-          <Descriptions.Item label="目的地">
-            <Tag color="blue" icon={<TruckOutlined />}>{MOCK_ORDER.destination}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="进度">
-            <Badge
-              count={`${orderItems.filter(i => i.status === 'DONE').length}/${orderItems.length}`}
-              style={{ backgroundColor: allDone ? '#10b981' : '#D23148' }}
+      <Row gutter={[16, 16]}>
+        <Col xs={24} lg={9}>
+          <Card
+            title={<Space><ScanOutlined style={{ color: token.colorPrimary }} /><span>选单 + 扫码</span></Space>}
+            className="shadow-sm"
+            style={{ position: 'sticky', top: 80 }}
+          >
+            <Select
+              showSearch
+              style={{ width: '100%' }}
+              size="large"
+              placeholder={loadingQueue ? '加载中…' : `选择待打包订单（${queue.length}）`}
+              value={order?.id}
+              onChange={selectOrder}
+              loading={loadingQueue}
+              optionFilterProp="label"
+              options={queue.map((o) => ({
+                value: o.id,
+                label: `${o.orderNo} · ${o.customerName}${o.status === 'PACKING' ? '（打包中）' : ''}`,
+              }))}
             />
-          </Descriptions.Item>
-        </Descriptions>
-      </Card>
 
-      {/* Steps */}
-      <Steps
-        current={currentStep}
-        className="mb-6"
-        items={[
-          { title: '扫描核验商品', icon: <ScanOutlined /> },
-          { title: '填写包材与重量', icon: <BoxPlotOutlined /> },
-          { title: '打印面单', icon: <PrinterOutlined /> },
-        ]}
-      />
-
-      {/* Step 0: Scan */}
-      {currentStep === 0 && (
-        <Row gutter={[16, 16]}>
-          <Col xs={24} lg={8}>
-            <Card
-              title={<Space><ScanOutlined style={{ color: '#D23148' }} /><span>扫码验货</span></Space>}
-              className="shadow-sm"
-              style={{ position: 'sticky', top: 80 }}
-            >
-              <Input
-                ref={scanRef}
-                size="large"
-                value={scanValue}
-                onChange={(e) => setScanValue(e.target.value)}
-                onPressEnter={() => handleScan(scanValue)}
-                placeholder="扫描商品条码 / Enter 确认"
-                prefix={<ScanOutlined className="text-gray-400" />}
-                autoFocus
-                allowClear
-                style={{ fontSize: 16 }}
-              />
-
-              {lastScanStatus !== 'idle' && (
-                <Alert
-                  className="mt-3 rounded-lg"
-                  type={alertColorMap[lastScanStatus]}
-                  message={lastScanMsg}
-                  showIcon
+            {order && (
+              <>
+                <Divider />
+                <Input
+                  ref={scanRef}
+                  size="large"
+                  value={scanValue}
+                  onChange={(e) => setScanValue(e.target.value)}
+                  onPressEnter={() => handleScan(scanValue)}
+                  placeholder="扫描 / 输入 SKU 后回车"
+                  prefix={<ScanOutlined className="text-gray-400" />}
+                  disabled={!canPack || packing}
+                  autoFocus
+                  allowClear
                 />
-              )}
+              </>
+            )}
 
-              <Divider />
+            {lastStatus !== 'idle' && (
+              <Alert className="mt-3" type={lastStatus === 'ok' ? 'success' : 'error'} message={lastMsg} showIcon />
+            )}
 
-              <div className="text-center py-2">
-                <div className={`text-4xl font-bold ${allDone ? 'text-green-500' : 'text-primary'}`}>
-                  {orderItems.filter(i => i.status === 'DONE').length}/{orderItems.length}
-                </div>
-                <div className="text-gray-400 text-sm mt-1">SKU 完成进度</div>
-              </div>
-
-              {hasOver && (
-                <Alert type="error" message="存在超量商品，请重新检查！" showIcon className="mb-3" />
-              )}
-
-              <Button
-                type="primary"
-                block
-                size="large"
-                disabled={!allDone || hasOver}
-                onClick={() => setCurrentStep(1)}
-                style={{ backgroundColor: allDone && !hasOver ? '#D23148' : undefined, height: 48, marginTop: 12 }}
-                icon={<BoxPlotOutlined />}
-              >
-                {allDone ? '核验完成，进入打包' : '请继续扫描商品'}
-              </Button>
-            </Card>
-          </Col>
-
-          <Col xs={24} lg={16}>
-            <Card
-              title={<Space><ScissorOutlined style={{ color: '#10b981' }} /><span>订单商品清单</span></Space>}
-              className="shadow-sm"
-            >
-              <Table
-                dataSource={orderItems}
-                columns={itemColumns}
-                rowKey="sku"
-                size="middle"
-                pagination={false}
-                rowClassName={(record) =>
-                  record.status === 'DONE' ? 'bg-green-50' : record.status === 'OVER' ? 'bg-red-50' : ''
-                }
-              />
-              <Alert
-                className="mt-4"
-                type="info"
-                message="操作提示：扫描商品条码逐件核验，所有商品达到要求数量后方可进入打包步骤。超量扫描会触发红色警告。"
-                showIcon
-              />
-            </Card>
-          </Col>
-        </Row>
-      )}
-
-      {/* Step 1: Package Info */}
-      {currentStep === 1 && (
-        <Row gutter={16} justify="center">
-          <Col xs={24} md={18} lg={14}>
-            <Card
-              title={<Space><BoxPlotOutlined style={{ color: '#D23148' }} /><span>包材信息 & 重量</span></Space>}
-              className="shadow-sm"
-            >
-              <Form form={form} layout="vertical" size="large">
-                <Form.Item label="物流渠道" name="courier" rules={[{ required: true }]}>
-                  <Select placeholder="请选择物流渠道" suffixIcon={<TruckOutlined />}>
-                    {COURIERS.map((c) => (
-                      <Option key={c.value} value={c.value}>{c.label}</Option>
-                    ))}
-                  </Select>
-                </Form.Item>
-
-                <Form.Item label="包材规格" name="packageType" rules={[{ required: true }]}>
-                  <Select placeholder="请选择纸箱规格">
-                    {PACKAGE_TYPES.map((p) => (
-                      <Option key={p.value} value={p.value}>{p.label}</Option>
-                    ))}
-                  </Select>
-                </Form.Item>
-
-                <Row gutter={16}>
+            {order && (
+              <>
+                <Divider />
+                <Row gutter={12} className="text-center">
                   <Col span={12}>
-                    <Form.Item label="毛重 (kg)" name="weight" rules={[{ required: true }]}>
-                      <InputNumber min={0.1} max={99} step={0.1} precision={1} placeholder="0.0" style={{ width: '100%' }} />
-                    </Form.Item>
+                    <Statistic title="已打包" value={totalPacked} valueStyle={{ color: token.colorPrimary, fontSize: 24 }} />
                   </Col>
                   <Col span={12}>
-                    <Form.Item label="计费重量 (kg)" name="chargeableWeight">
-                      <InputNumber min={0.1} max={99} step={0.1} precision={1} placeholder="自动计算" style={{ width: '100%' }} disabled />
-                    </Form.Item>
+                    <Statistic title="需求总数" value={totalRequired} valueStyle={{ fontSize: 24 }} />
                   </Col>
                 </Row>
-
-                <Form.Item label="备注" name="remarks">
-                  <Input.TextArea rows={2} placeholder="可选备注（如: FRAGILE 易碎品）" />
-                </Form.Item>
-
-                <Divider />
-
-                <Space className="w-full justify-between">
-                  <Button size="large" onClick={() => setCurrentStep(0)} icon={<ArrowLeftOutlined />}>
-                    返回重新扫描
-                  </Button>
-                  <Button
-                    type="primary"
-                    size="large"
-                    loading={isSubmitting}
-                    onClick={handlePackingSubmit}
-                    icon={<PrinterOutlined />}
-                    style={{ backgroundColor: '#D23148', minWidth: 160 }}
-                  >
-                    确认打包 & 打印面单
-                  </Button>
-                </Space>
-              </Form>
-            </Card>
-          </Col>
-        </Row>
-      )}
-
-      {/* Step 2: Done */}
-      {currentStep === 2 && (
-        <Row justify="center">
-          <Col xs={24} md={16} lg={12}>
-            <Card className="shadow-sm text-center py-8">
-              <CheckCircleOutlined style={{ fontSize: 72, color: '#10b981' }} />
-              <h2 className="text-2xl font-bold mt-4 text-gray-800">打包完成！</h2>
-              <p className="text-gray-500 mb-6">面单已打印，请粘贴到包裹外侧并放置到待发区</p>
-              <Space size="large">
-                <Button icon={<PrinterOutlined />} size="large">
-                  重新打印面单
-                </Button>
                 <Button
+                  className="mt-4"
                   type="primary"
+                  block
                   size="large"
-                  onClick={() => navigate('/outbound/picking')}
-                  style={{ backgroundColor: '#D23148' }}
+                  icon={<BoxPlotOutlined />}
+                  loading={completing}
+                  disabled={!allPacked || !canPack}
+                  onClick={completePacking}
+                  style={{ height: 46 }}
                 >
-                  处理下一单
+                  {allPacked ? '完成打包' : `还差 ${totalRequired - totalPacked} 件`}
                 </Button>
+                {!canPack && <div className="mt-2 text-center text-xs text-slate-400">当前角色无打包权限</div>}
+              </>
+            )}
+
+            {!order && (
+              <div className="text-center py-10 text-gray-400">
+                <ScissorOutlined style={{ fontSize: 40, opacity: 0.25 }} />
+                <p className="mt-2 text-sm">
+                  {queue.length === 0 ? '当前没有「已拣货」订单待打包' : '请先选择一个待打包订单'}
+                </p>
+              </div>
+            )}
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={15}>
+          <Card
+            title={
+              <Space>
+                <BoxPlotOutlined style={{ color: token.colorPrimary }} />
+                <span>订单明细</span>
+                {order && <Badge count={order.items.length} style={{ backgroundColor: token.colorPrimary }} />}
               </Space>
-            </Card>
-          </Col>
-        </Row>
-      )}
+            }
+            className="shadow-sm"
+          >
+            {!order ? (
+              <div className="text-center py-16 text-gray-400">
+                <BoxPlotOutlined style={{ fontSize: 48, opacity: 0.25 }} />
+                <p className="mt-3">选择订单后在此显示明细</p>
+              </div>
+            ) : (
+              <>
+                <Descriptions size="small" column={2} bordered className="mb-4">
+                  <Descriptions.Item label="订单号">{order.orderNo}</Descriptions.Item>
+                  <Descriptions.Item label="客户">{order.customerName}</Descriptions.Item>
+                  <Descriptions.Item label="状态"><Tag color="processing">{order.status}</Tag></Descriptions.Item>
+                  <Descriptions.Item label="目的地">
+                    {[order.shipToCity, order.shipToCountry].filter(Boolean).join(' · ') || '—'}
+                  </Descriptions.Item>
+                </Descriptions>
+                <Table dataSource={order.items} columns={columns} size="small" rowKey="sku" pagination={false} />
+              </>
+            )}
+          </Card>
+        </Col>
+      </Row>
     </PageContainer>
   );
 };
