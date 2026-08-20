@@ -97,6 +97,7 @@ export const actionPermissions: Record<string, Role[]> = {
   'inventory.adjust': OPS, // inventory/adjust
   'receiving.receive': OPS, // receiving-orders/:id/check|receive|complete
   'customer.write': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'CUSTOMER_SERVICE'],
+  'customer.transaction': ['SUPER_ADMIN', 'FINANCE'], // customer-transactions POST
 };
 
 export function hasRole(allowed: Role[] | undefined, role: string | null | undefined): boolean {
