@@ -9,6 +9,21 @@
 .env
 .env.*
 
+# ── Commercial rate cards / pricing data (NEVER COMMIT) ──
+# Customer-facing price lists are commercially sensitive. Source workbooks, any
+# extract of them, and any seed built from real prices stay out of the repo —
+# importer CODE is fine, the DATA is not. Use synthetic prices in tests/fixtures.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+**/价卡*
+**/rate-card*
+**/ratecard*
+**/*rate-card*.json
+**/*rate-card*.sql
+**/seed-rates*
+
 # ── Dependencies & build output ──
 node_modules/
 dist/
