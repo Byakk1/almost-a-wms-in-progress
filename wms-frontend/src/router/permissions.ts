@@ -95,6 +95,7 @@ export const actionPermissions: Record<string, Role[]> = {
   'transit.receive': OPS, // transit-orders/:id/receive PUT
   'transit.ship': OPS, // transit-orders/:id/ship PUT
   'inventory.adjust': OPS, // inventory/adjust
+  'receiving.receive': OPS, // receiving-orders/:id/check|receive|complete
   'customer.write': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'CUSTOMER_SERVICE'],
 };
 

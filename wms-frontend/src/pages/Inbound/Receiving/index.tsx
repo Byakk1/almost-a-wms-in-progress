@@ -1,174 +1,181 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { PageContainer } from '@ant-design/pro-components';
 import {
-  Card, Row, Col, Input, Button, Table, Tag, Alert,
-  Space, Statistic, Divider, message, Badge
+  Card, Row, Col, Input, Button, Table, Tag, Alert, Select, Empty,
+  Space, Statistic, Divider, message, Progress, theme,
 } from 'antd';
 import {
-  ScanOutlined, CheckCircleOutlined, CloseCircleOutlined,
-  WarningOutlined, DeleteOutlined, SaveOutlined, ArrowLeftOutlined
+  ScanOutlined, CheckCircleOutlined, SaveOutlined,
+  ArrowLeftOutlined, InboxOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import request from '../../../utils/request';
+import { useCan } from '../../../router/permissions';
 
-interface ScannedItem {
-  key: string;
-  barcode: string;
-  sku: string;
-  productName: string;
-  qty: number;
-  status: 'OK' | 'ERROR' | 'DUPLICATE';
-  scannedAt: string;
+// GET /receiving-orders/:id returns the order with items -> product joined.
+interface ReceivingItem {
+  id: string;
+  expectedQty: number;
+  receivedQty: number;
+  product: { id: string; sku: string; name: string; barcode: string | null };
 }
 
-// Mock barcode database
-const MOCK_PRODUCTS: Record<string, { sku: string; productName: string }> = {
-  'SF123456789': { sku: 'SKU-A001', productName: 'iPhone 15 Pro 手机壳' },
-  'JD987654321': { sku: 'SKU-B002', productName: '无线蓝牙耳机 AirPods 兼容款' },
-  'YT556677889': { sku: 'SKU-C003', productName: 'USB-C 快充线 1m' },
-  'SF000111222': { sku: 'SKU-D004', productName: '手机支架 金属折叠款' },
-  'EMS999888777': { sku: 'SKU-E005', productName: '硅胶保护套 iPad Pro' },
-};
+interface ReceivingOrder {
+  id: string;
+  receivingNo: string;
+  status: string;
+  customer?: { name: string } | null;
+  items: ReceivingItem[];
+}
+
+interface OrderOption {
+  id: string;
+  receivingNo: string;
+  status: string;
+  customer?: { name: string } | null;
+}
+
+// Only these two states accept a scan (receiving-orders.service.ts#receive).
+const SCANNABLE = ['CHECKING', 'RECEIVING'];
 
 const ReceivingWorkbench: React.FC = () => {
   const navigate = useNavigate();
-  const scanInputRef = useRef<any>(null);
-  const [scanValue, setScanValue] = useState('');
-  const [scannedItems, setScannedItems] = useState<ScannedItem[]>([]);
-  const [lastScanStatus, setLastScanStatus] = useState<'idle' | 'ok' | 'error' | 'duplicate'>('idle');
-  const [lastScanMsg, setLastScanMsg] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const scanRef = useRef<any>(null);
+  const { token } = theme.useToken();
+  const canReceive = useCan('receiving.receive');
 
-  // Auto-focus scan input on mount
-  useEffect(() => {
-    scanInputRef.current?.focus();
+  const [options, setOptions] = useState<OrderOption[]>([]);
+  const [orderId, setOrderId] = useState<string>();
+  const [order, setOrder] = useState<ReceivingOrder | null>(null);
+  const [scanValue, setScanValue] = useState('');
+  const [lastStatus, setLastStatus] = useState<'idle' | 'ok' | 'error' | 'warn'>('idle');
+  const [lastMsg, setLastMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [completing, setCompleting] = useState(false);
+
+  // The list endpoint filters by a single status, so the scannable queue is the
+  // union of the two states that accept a scan.
+  const loadOptions = useCallback(async () => {
+    try {
+      const results = await Promise.all(
+        SCANNABLE.map((s) =>
+          request.get('/receiving-orders', { params: { status: s, pageSize: 100 } }).catch(() => null),
+        ),
+      );
+      const merged = results.flatMap((r: any) => r?.data ?? []);
+      setOptions(merged);
+    } catch {
+      // request.ts interceptor surfaces errors
+    }
   }, []);
 
-  // Re-focus after status change
+  // Item quantities are re-read from the server after every scan — receivedQty is
+  // owned by the backend (it enforces the over-receipt guard), never accumulated here.
+  const loadOrder = useCallback(async (id: string) => {
+    try {
+      const res: any = await request.get(`/receiving-orders/${id}`);
+      setOrder(res?.data ?? null);
+    } catch {
+      setOrder(null);
+    }
+  }, []);
+
   useEffect(() => {
-    if (lastScanStatus !== 'idle') {
-      const timer = setTimeout(() => {
-        scanInputRef.current?.focus();
-      }, 200);
-      return () => clearTimeout(timer);
-    }
-  }, [lastScanStatus, scannedItems]);
+    loadOptions();
+    scanRef.current?.focus();
+  }, [loadOptions]);
 
-  const handleScan = (barcode: string) => {
-    const trimmed = barcode.trim();
-    if (!trimmed) return;
+  useEffect(() => {
+    if (orderId) loadOrder(orderId);
+    else setOrder(null);
+  }, [orderId, loadOrder]);
 
-    // Check duplicate
-    const existingIndex = scannedItems.findIndex(
-      (item) => item.barcode === trimmed
-    );
-
-    if (existingIndex !== -1) {
-      // Increment qty on duplicate scan (common warehouse behavior)
-      const updatedItems = [...scannedItems];
-      updatedItems[existingIndex] = {
-        ...updatedItems[existingIndex],
-        qty: updatedItems[existingIndex].qty + 1,
-        status: 'DUPLICATE',
-      };
-      setScannedItems(updatedItems);
-      setLastScanStatus('duplicate');
-      setLastScanMsg(`重复扫描！${trimmed} 数量已累加至 ${updatedItems[existingIndex].qty}`);
-      message.warning(`重复扫描：${trimmed}，数量已累加`);
-    } else {
-      // Look up product
-      const product = MOCK_PRODUCTS[trimmed];
-      if (product) {
-        const newItem: ScannedItem = {
-          key: `${trimmed}-${Date.now()}`,
-          barcode: trimmed,
-          sku: product.sku,
-          productName: product.productName,
-          qty: 1,
-          status: 'OK',
-          scannedAt: new Date().toLocaleTimeString('zh-CN'),
-        };
-        setScannedItems((prev) => [newItem, ...prev]);
-        setLastScanStatus('ok');
-        setLastScanMsg(`✅ 扫描成功：${product.productName} (${product.sku})`);
-      } else {
-        // Unknown barcode
-        setLastScanStatus('error');
-        setLastScanMsg(`❌ 未知条码：${trimmed}，请核实商品信息`);
-        message.error(`未识别的条码：${trimmed}`);
-      }
-    }
-
-    setScanValue('');
-  };
-
-  const handleRemoveItem = (key: string) => {
-    setScannedItems((prev) => prev.filter((item) => item.key !== key));
-    scanInputRef.current?.focus();
-  };
-
-  const handleSubmit = async () => {
-    if (scannedItems.length === 0) {
-      message.warning('请先扫描商品条码');
+  const handleScan = async (val: string) => {
+    const v = val.trim();
+    if (!v) return;
+    if (!order) {
+      setLastStatus('error');
+      setLastMsg('请先选择一张收货单');
+      setScanValue('');
       return;
     }
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    setIsSubmitting(false);
-    message.success(`收货完成！共 ${scannedItems.length} 个 SKU，${scannedItems.reduce((s, i) => s + i.qty, 0)} 件`);
-    setScannedItems([]);
-    setLastScanStatus('idle');
-    scanInputRef.current?.focus();
+
+    // The receive endpoint keys on SKU, so a scanned barcode is resolved to its
+    // SKU against this order's items before the call.
+    const hit = order.items.find(
+      (i) => i.product.sku === v || (i.product.barcode && i.product.barcode === v),
+    );
+    if (!hit) {
+      setLastStatus('error');
+      setLastMsg(`❌ 该收货单中没有匹配的商品：${v}`);
+      message.error('条码/SKU 不在本收货单内');
+      setScanValue('');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await request.post(`/receiving-orders/${order.id}/receive`, { sku: hit.product.sku, qty: 1 });
+      setLastStatus('ok');
+      setLastMsg(`✅ ${hit.product.name}（${hit.product.sku}）+1`);
+      await loadOrder(order.id);
+    } catch {
+      // Interceptor already showed the server's reason (e.g. over-receipt).
+      setLastStatus('warn');
+      setLastMsg(`⚠️ ${hit.product.sku} 收货未成功，请查看提示`);
+    } finally {
+      setBusy(false);
+      setScanValue('');
+      scanRef.current?.focus();
+    }
   };
 
-  const totalQty = scannedItems.reduce((sum, item) => sum + item.qty, 0);
-  const errorCount = scannedItems.filter((i) => i.status === 'ERROR').length;
-
-  const alertMap = {
-    ok: { type: 'success' as const, message: lastScanMsg },
-    error: { type: 'error' as const, message: lastScanMsg },
-    duplicate: { type: 'warning' as const, message: lastScanMsg },
-    idle: null,
+  const handleComplete = async () => {
+    if (!order) return;
+    setCompleting(true);
+    try {
+      await request.post(`/receiving-orders/${order.id}/complete`);
+      message.success(`收货单 ${order.receivingNo} 已完成收货`);
+      await Promise.all([loadOptions(), loadOrder(order.id)]);
+    } catch {
+      // request.ts interceptor surfaces errors
+    } finally {
+      setCompleting(false);
+    }
   };
-  const currentAlert = alertMap[lastScanStatus];
+
+  const totalExpected = order?.items.reduce((s, i) => s + i.expectedQty, 0) ?? 0;
+  const totalReceived = order?.items.reduce((s, i) => s + i.receivedQty, 0) ?? 0;
+  const allReceived = !!order && order.items.length > 0 && order.items.every((i) => i.receivedQty >= i.expectedQty);
+
+  const alertType: Record<string, 'success' | 'error' | 'warning'> = {
+    ok: 'success', error: 'error', warn: 'warning', idle: 'success',
+  };
 
   const columns = [
+    { title: 'SKU', dataIndex: ['product', 'sku'], width: 150,
+      render: (v: string) => <code className="text-xs bg-slate-100 px-1 rounded">{v}</code> },
+    { title: '商品名称', dataIndex: ['product', 'name'], ellipsis: true },
+    { title: '条码', dataIndex: ['product', 'barcode'], width: 140, render: (v?: string) => v || '—' },
+    { title: '预期', dataIndex: 'expectedQty', width: 70 },
+    { title: '已收', dataIndex: 'receivedQty', width: 70,
+      render: (v: number) => <span style={{ fontWeight: 600 }}>{v}</span> },
     {
-      title: '物流条码',
-      dataIndex: 'barcode',
-      width: 160,
-      render: (v: string) => <code className="text-xs bg-gray-100 px-1 rounded">{v}</code>,
-    },
-    { title: 'SKU', dataIndex: 'sku', width: 120 },
-    { title: '商品名称', dataIndex: 'productName', ellipsis: true },
-    {
-      title: '数量',
-      dataIndex: 'qty',
-      width: 70,
-      render: (v: number) => <Badge count={v} style={{ backgroundColor: '#D23148' }} />,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      width: 100,
-      render: (v: string) => {
-        if (v === 'OK') return <Tag color="success" icon={<CheckCircleOutlined />}>正常</Tag>;
-        if (v === 'DUPLICATE') return <Tag color="warning" icon={<WarningOutlined />}>重复</Tag>;
-        return <Tag color="error" icon={<CloseCircleOutlined />}>异常</Tag>;
-      },
-    },
-    { title: '扫描时间', dataIndex: 'scannedAt', width: 90 },
-    {
-      title: '操作',
-      width: 80,
-      render: (_: any, record: ScannedItem) => (
-        <Button
-          type="text"
-          danger
-          icon={<DeleteOutlined />}
+      title: '进度', width: 150,
+      render: (_: any, r: ReceivingItem) => (
+        <Progress
+          percent={r.expectedQty ? Math.round((r.receivedQty / r.expectedQty) * 100) : 0}
           size="small"
-          onClick={() => handleRemoveItem(record.key)}
+          status={r.receivedQty >= r.expectedQty ? 'success' : 'active'}
         />
       ),
+    },
+    {
+      title: '状态', width: 90,
+      render: (_: any, r: ReceivingItem) =>
+        r.receivedQty >= r.expectedQty
+          ? <Tag color="success" icon={<CheckCircleOutlined />}>已收齐</Tag>
+          : <Tag color="processing">待收</Tag>,
     },
   ];
 
@@ -176,7 +183,7 @@ const ReceivingWorkbench: React.FC = () => {
     <PageContainer
       header={{
         title: '收货操作工作台',
-        subTitle: '扫描物流条码，快速登记入库货物',
+        subTitle: '选择收货单后扫描商品条码 / SKU，逐件登记入库',
         extra: [
           <Button key="back" icon={<ArrowLeftOutlined />} onClick={() => navigate('/inbound/receiving')}>
             返回列表
@@ -185,152 +192,109 @@ const ReceivingWorkbench: React.FC = () => {
       }}
     >
       <Row gutter={[16, 16]}>
-        {/* Left: Scan Panel */}
         <Col xs={24} lg={8}>
           <Card
-            title={
-              <Space>
-                <ScanOutlined style={{ color: '#D23148' }} />
-                <span>扫码区</span>
-              </Space>
-            }
+            title={<Space><ScanOutlined style={{ color: token.colorPrimary }} /><span>扫码收货</span></Space>}
             className="shadow-sm"
             style={{ position: 'sticky', top: 80 }}
           >
-            <div className="text-center mb-4">
-              <div
-                className="inline-flex items-center justify-center w-20 h-20 rounded-full mb-3"
-                style={{ backgroundColor: '#D23148/10', background: 'rgba(210, 49, 72, 0.08)' }}
-              >
-                <ScanOutlined style={{ fontSize: 36, color: '#D23148' }} />
-              </div>
-              <p className="text-sm text-gray-400">请将条码对准扫码枪，或手动输入后按 Enter</p>
+            <div className="mb-3">
+              <div className="text-xs text-slate-500 mb-1">收货单（仅验收中 / 收货中可扫描）</div>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder={options.length ? '选择收货单' : '当前没有可扫描的收货单'}
+                style={{ width: '100%' }}
+                value={orderId}
+                onChange={(v) => { setOrderId(v); setLastStatus('idle'); }}
+                options={options.map((o) => ({
+                  value: o.id,
+                  label: `${o.receivingNo} · ${o.customer?.name ?? '—'} · ${o.status}`,
+                }))}
+              />
             </div>
 
             <Input
-              ref={scanInputRef}
+              ref={scanRef}
               size="large"
               value={scanValue}
               onChange={(e) => setScanValue(e.target.value)}
               onPressEnter={() => handleScan(scanValue)}
-              placeholder="扫描 / 输入条码后按 Enter"
+              placeholder="扫描条码 / SKU 后按 Enter"
               prefix={<ScanOutlined className="text-gray-400" />}
-              autoFocus
+              disabled={!order || busy || !canReceive}
               allowClear
               style={{ fontSize: 16 }}
             />
-
-            {/* Feedback Alert */}
-            {currentAlert && (
-              <Alert
-                className="mt-3 rounded-lg"
-                type={currentAlert.type}
-                message={currentAlert.message}
-                showIcon
-              />
+            {lastStatus !== 'idle' && (
+              <Alert className="mt-3" type={alertType[lastStatus]} message={lastMsg} showIcon />
             )}
 
             <Divider />
-
-            {/* Stats */}
             <Row gutter={16} className="text-center">
               <Col span={12}>
-                <Statistic
-                  title="已扫 SKU"
-                  value={scannedItems.length}
-                  valueStyle={{ color: '#D23148', fontSize: 28 }}
-                />
+                <Statistic title="已收件数" value={totalReceived} valueStyle={{ color: token.colorPrimary, fontSize: 26 }} />
               </Col>
               <Col span={12}>
-                <Statistic
-                  title="总件数"
-                  value={totalQty}
-                  valueStyle={{ color: '#10b981', fontSize: 28 }}
-                />
+                <Statistic title="预期件数" value={totalExpected} valueStyle={{ fontSize: 26 }} />
               </Col>
             </Row>
-            {errorCount > 0 && (
-              <Alert
-                className="mt-3"
-                type="error"
-                message={`⚠️ 共 ${errorCount} 件异常，请确认后提交`}
-                showIcon
-              />
+
+            {order && (
+              <div className="mt-3 text-center">
+                <Tag color={order.status === 'RECEIVING' ? 'processing' : 'default'}>{order.status}</Tag>
+              </div>
             )}
 
             <Button
               type="primary"
-              size="large"
               block
+              size="large"
               className="mt-4"
               icon={<SaveOutlined />}
-              loading={isSubmitting}
-              onClick={handleSubmit}
-              style={{ backgroundColor: '#D23148', height: 48 }}
-              disabled={scannedItems.length === 0}
+              loading={completing}
+              disabled={!order || !allReceived || !canReceive || order.status === 'COMPLETED'}
+              onClick={handleComplete}
+              style={{ height: 48 }}
             >
-              提交收货 ({totalQty} 件)
+              完成收货
             </Button>
+            {order && !allReceived && (
+              <div className="mt-2 text-center text-xs text-slate-400">全部 SKU 收齐后方可完成</div>
+            )}
+            {!canReceive && (
+              <div className="mt-2 text-center text-xs text-slate-400">当前角色无收货权限</div>
+            )}
           </Card>
         </Col>
 
-        {/* Right: Scanned List */}
         <Col xs={24} lg={16}>
           <Card
             title={
               <Space>
-                <CheckCircleOutlined style={{ color: '#10b981' }} />
-                <span>已扫商品明细</span>
-                <Tag color="red">{scannedItems.length} SKU</Tag>
+                <InboxOutlined style={{ color: token.colorPrimary }} />
+                <span>{order ? `${order.receivingNo} 商品明细` : '商品明细'}</span>
+                {order && <Tag>{order.items.length} SKU</Tag>}
               </Space>
-            }
-            extra={
-              scannedItems.length > 0 && (
-                <Button
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => {
-                    setScannedItems([]);
-                    setLastScanStatus('idle');
-                    scanInputRef.current?.focus();
-                  }}
-                >
-                  清空列表
-                </Button>
-              )
             }
             className="shadow-sm"
           >
-            {scannedItems.length === 0 ? (
-              <div className="text-center py-16 text-gray-400">
-                <ScanOutlined style={{ fontSize: 48, opacity: 0.3 }} />
-                <p className="mt-3">暂无扫描记录，请开始扫码收货</p>
+            {!order ? (
+              <div className="py-16">
+                <Empty description="请选择一张收货单开始扫码" />
               </div>
             ) : (
               <Table
-                dataSource={scannedItems}
+                dataSource={order.items}
                 columns={columns}
                 size="small"
-                rowKey="key"
+                rowKey="id"
                 pagination={false}
                 scroll={{ y: 520 }}
-                rowClassName={(record) =>
-                  record.status === 'ERROR' ? 'bg-red-50' : record.status === 'DUPLICATE' ? 'bg-yellow-50' : ''
-                }
+                rowClassName={(r) => (r.receivedQty >= r.expectedQty ? 'bg-green-50' : '')}
               />
             )}
-          </Card>
-
-          {/* Quick Hint */}
-          <Card size="small" className="mt-3 bg-blue-50 border-blue-200">
-            <Space wrap>
-              <Tag color="blue">💡 操作提示</Tag>
-              <span className="text-xs text-gray-500">• 支持扫码枪，扫后自动识别</span>
-              <span className="text-xs text-gray-500">• 重复扫描同一条码，数量自动加一</span>
-              <span className="text-xs text-gray-500">• 未识别条码会显示红色警告</span>
-              <span className="text-xs text-gray-500">• 提交前请核对件数无误</span>
-            </Space>
           </Card>
         </Col>
       </Row>
