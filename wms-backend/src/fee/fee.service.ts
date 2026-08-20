@@ -116,6 +116,10 @@ export class FeeService {
           resolvedFrom: q.source, // CUSTOMER | DEFAULT
           zone: q.zone,
           unitPrice: q.unitPrice,
+          // The undiscounted rate is kept alongside so a bill can show what the
+          // list price was and what the contract multiplier did to it.
+          listUnitPrice: (q as any).listUnitPrice ?? q.unitPrice,
+          discountRatio: (q as any).discountRatio ?? 1,
           chargeUnit: q.chargeUnit,
           band: { from: q.rangeStart, to: q.rangeEnd },
           minFeeApplied: (q as any).minFeeApplied ?? false,

@@ -1,9 +1,11 @@
 import { Type } from 'class-transformer';
 import {
   IsArray, IsDateString, IsIn, IsInt, IsNotEmpty, IsNumber,
-  IsOptional, IsString, Min, ValidateNested,
+  IsOptional, IsString, Max, Min, ValidateNested,
 } from 'class-validator';
-import { RATE_CARD_TYPES, TIER_BASES } from '../rate-card.constants';
+import {
+  MAX_DISCOUNT_RATIO, MIN_DISCOUNT_RATIO, RATE_CARD_TYPES, TIER_BASES,
+} from '../rate-card.constants';
 import { RateCardItemDto, ShippingZoneDto } from './create-rate-card.dto';
 
 /** Append lines to a DRAFT card. Rejected once the card is ACTIVE. */
@@ -35,6 +37,19 @@ export class AssignRateCardDto {
   @IsOptional()
   @IsInt({ message: '优先级必须为整数（priority）' })
   priority?: number;
+
+  /**
+   * Negotiated contract multiplier. 1 = list price, 0.7 = the hard floor (30% off).
+   * Out-of-range values are REFUSED rather than clamped: silently pulling a 0.5 up
+   * to 0.7 would bill at a rate nobody agreed to and hide the misconfiguration.
+   */
+  @IsOptional()
+  @IsNumber({}, { message: '折扣系数必须为数字（discountRatio）' })
+  @Min(MIN_DISCOUNT_RATIO, {
+    message: `折扣系数不得低于 ${MIN_DISCOUNT_RATIO}（最多 ${Math.round((1 - MIN_DISCOUNT_RATIO) * 100)}% 折让）`,
+  })
+  @Max(MAX_DISCOUNT_RATIO, { message: `折扣系数不得高于 ${MAX_DISCOUNT_RATIO}（不得高于标准价）` })
+  discountRatio?: number;
 }
 
 /**

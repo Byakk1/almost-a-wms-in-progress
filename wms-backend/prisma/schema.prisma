@@ -745,7 +745,11 @@ model CustomerRateCard {
   rateCardId String
   rateCard   RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
   priority   Int      @default(0) // higher wins
-  createdAt  DateTime @default(now())
+  // Negotiated contract multiplier: 1.000 = list price, 0.700 = the hard floor
+  // (30% off). A DB CHECK constraint enforces the range — see
+  // prisma/sql/customer_rate_card_discount.sql.
+  discountRatio Decimal @default(1.000) @db.Decimal(4, 3)
+  createdAt     DateTime @default(now())
 
   @@unique([customerId, rateCardId])
   @@index([customerId, priority])

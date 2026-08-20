@@ -46,3 +46,14 @@ export const TIER_BASES = [
   'QUANTITY',
 ] as const;
 export type TierBasis = (typeof TIER_BASES)[number];
+
+// ─── Contract discount ──────────────────────────────────────────────
+// A customer may be assigned a card at a negotiated multiplier. 1.0 = list price;
+// MIN_DISCOUNT_RATIO is the commercial hard floor and is NOT a soft default —
+// anything below it must be refused, not clamped. Clamping would let a bad
+// configuration bill quietly at the floor instead of failing loudly.
+//
+// Mirrored by the CHECK constraint in prisma/sql/customer_rate_card_discount.sql.
+
+export const MIN_DISCOUNT_RATIO = 0.7;
+export const MAX_DISCOUNT_RATIO = 1.0;

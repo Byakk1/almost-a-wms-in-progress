@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { OperationLogService } from '../common/operation-log.service';
 import { assertTransition, RATE_CARD_TRANSITIONS } from '../common/state-machine';
 import { CreateRateCardDto, RateCardItemDto, ShippingZoneDto } from './dto/create-rate-card.dto';
+import { MAX_DISCOUNT_RATIO, MIN_DISCOUNT_RATIO } from './rate-card.constants';
 import {
   AddRateCardItemsDto, AddShippingZonesDto, AssignRateCardDto, QuoteDto,
 } from './dto/rate-card-ops.dto';
@@ -15,6 +16,7 @@ const hi = (v: any): number => (v === null || v === undefined ? Infinity : Numbe
 
 /** Money rounds to 2dp at the boundary; unitPrice keeps its stored 4dp precision. */
 const money = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+const round4 = (n: number): number => Math.round((n + Number.EPSILON) * 10000) / 10000;
 
 @Injectable()
 export class RateCardsService {
@@ -82,6 +84,7 @@ export class RateCardsService {
         customerCode: c.customer.code,
         customerName: c.customer.name,
         priority: c.priority,
+        discountRatio: Number(c.discountRatio),
       })),
     };
   }
@@ -235,15 +238,35 @@ export class RateCardsService {
     if (!card) throw new NotFoundException('价卡不存在');
     if (card.status === 'ARCHIVED') throw new BadRequestException('已归档的价卡不能分配给客户');
 
+    // Re-checked here, not only in the DTO: scripts and background jobs call the
+    // service directly and never pass through the ValidationPipe.
+    const ratio = dto.discountRatio === undefined ? 1 : Number(dto.discountRatio);
+    if (!Number.isFinite(ratio) || ratio < MIN_DISCOUNT_RATIO || ratio > MAX_DISCOUNT_RATIO) {
+      throw new BadRequestException(
+        `折扣系数 ${dto.discountRatio} 超出允许范围 ` +
+        `[${MIN_DISCOUNT_RATIO}, ${MAX_DISCOUNT_RATIO}]，最多 ` +
+        `${Math.round((1 - MIN_DISCOUNT_RATIO) * 100)}% 折让`,
+      );
+    }
+
     const link = await this.prisma.customerRateCard.upsert({
       where: { customerId_rateCardId: { customerId: dto.customerId, rateCardId: dto.rateCardId } },
-      update: { priority: dto.priority ?? 0 },
-      create: { customerId: dto.customerId, rateCardId: dto.rateCardId, priority: dto.priority ?? 0 },
+      update: { priority: dto.priority ?? 0, discountRatio: ratio },
+      create: {
+        customerId: dto.customerId, rateCardId: dto.rateCardId,
+        priority: dto.priority ?? 0, discountRatio: ratio,
+      },
     });
     await this.opLog.log({
       entityType: ENTITY, entityId: dto.rateCardId, action: 'ASSIGN',
-      afterData: { customerId: dto.customerId, priority: link.priority },
-      description: `价卡 ${card.name} 分配给客户 ${customer.name}（优先级 ${link.priority}）`,
+      afterData: {
+        customerId: dto.customerId,
+        priority: link.priority,
+        discountRatio: Number(link.discountRatio),
+      },
+      description:
+        `价卡 ${card.name} 分配给客户 ${customer.name}（优先级 ${link.priority}，` +
+        `折扣系数 ${Number(link.discountRatio)}）`,
     });
     return link;
   }
@@ -286,7 +309,7 @@ export class RateCardsService {
       ...(params.carrier ? { carrier: params.carrier } : {}),
     };
 
-    const out: Array<{ card: any; source: 'CUSTOMER' | 'DEFAULT' }> = [];
+    const out: Array<{ card: any; source: 'CUSTOMER' | 'DEFAULT'; discountRatio: number }> = [];
 
     if (params.customerId) {
       const assigned = await this.prisma.customerRateCard.findMany({
@@ -294,7 +317,11 @@ export class RateCardsService {
         include: { rateCard: true },
         orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
       });
-      out.push(...assigned.map((a) => ({ card: a.rateCard, source: 'CUSTOMER' as const })));
+      out.push(...assigned.map((a) => ({
+        card: a.rateCard,
+        source: 'CUSTOMER' as const,
+        discountRatio: Number(a.discountRatio),
+      })));
     }
 
     const seen = new Set(out.map((o) => o.card.id));
@@ -302,8 +329,11 @@ export class RateCardsService {
       where: { ...dated, isDefault: true },
       orderBy: [{ effectiveAt: 'desc' }, { createdAt: 'desc' }],
     });
+    // A default card is the published list price — there is no assignment to carry
+    // a negotiated multiplier, so it is always billed at 1.0.
     out.push(
-      ...defaults.filter((d) => !seen.has(d.id)).map((d) => ({ card: d, source: 'DEFAULT' as const })),
+      ...defaults.filter((d) => !seen.has(d.id))
+        .map((d) => ({ card: d, source: 'DEFAULT' as const, discountRatio: 1 })),
     );
 
     return out;
@@ -347,7 +377,7 @@ export class RateCardsService {
     let zoneMiss: string | null = null;
     const triedCards: string[] = [];
 
-    for (const { card, source } of candidates) {
+    for (const { card, source, discountRatio } of candidates) {
       // SHIPPING: postcode → zone is the first of two lookups.
       let zone: string | null = null;
       if (card.type === 'SHIPPING') {
@@ -373,7 +403,7 @@ export class RateCardsService {
         continue;
       }
 
-      return this.priceFrom(card, source, zone, items, dto);
+      return this.priceFrom(card, source, zone, items, dto, discountRatio);
     }
 
     if (zoneMiss) throw new NotFoundException(zoneMiss);
@@ -390,6 +420,7 @@ export class RateCardsService {
     zone: string | null,
     candidates: any[],
     dto: QuoteDto,
+    discountRatio = 1,
   ) {
     const flat = candidates.filter((c) => c.tierBasis === 'NONE');
     const tiered = candidates.filter((c) => c.tierBasis !== 'NONE');
@@ -422,23 +453,41 @@ export class RateCardsService {
       chargeUnit: item.chargeUnit, tierBasis: item.tierBasis,
       rangeStart: item.rangeStart, rangeEnd: item.rangeEnd,
       quantity, note: item.note,
+      discountRatio,
+      discountApplied: discountRatio !== 1,
     };
 
     if (item.quoteOnRequest || item.unitPrice === null) {
       return {
-        ...head, unitPrice: null, amount: null, quoteOnRequest: true,
+        ...head, listUnitPrice: null, unitPrice: null, listAmount: null, amount: null,
+        minFeeApplied: false, quoteOnRequest: true,
         // Deliberately NOT 0 — a 面议 line billed as zero is a silent revenue leak.
+        // The discount is reported but cannot be applied to a price that does not exist.
         message: '该项为面议价，需人工报价',
       };
     }
 
-    const raw = Number(item.unitPrice) * quantity;
+    const listUnitPrice = Number(item.unitPrice);
+    // 4dp matches the stored precision of unitPrice, so the discounted rate is
+    // representable rather than a repeating value truncated later.
+    const unitPrice = round4(listUnitPrice * discountRatio);
+
+    const listAmount = listUnitPrice * quantity;
+    const raw = unitPrice * quantity;
+
+    // minFee is an absolute floor and is NOT discounted. It exists to recover a
+    // fixed handling cost, so scaling it with the contract multiplier would let a
+    // large discount push the charge below the cost the floor was there to cover.
+    // Consequence worth knowing: below the floor, a discounted customer pays the
+    // same as everyone else — minFeeApplied makes that visible on the response.
     const minFee = item.minFee === null ? null : Number(item.minFee);
     const amount = minFee !== null && raw < minFee ? minFee : raw;
 
     return {
       ...head,
-      unitPrice: Number(item.unitPrice),
+      listUnitPrice,
+      unitPrice,
+      listAmount: money(listAmount),
       amount: money(amount),
       minFeeApplied: minFee !== null && raw < minFee,
       quoteOnRequest: false,

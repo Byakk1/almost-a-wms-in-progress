@@ -4,6 +4,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { RateCardsService } from '../src/rate-cards/rate-cards.service';
 import { OperationLogService } from '../src/common/operation-log.service';
 import { FeeService } from '../src/fee/fee.service';
+import { MIN_DISCOUNT_RATIO as MIN } from '../src/rate-cards/rate-card.constants';
 
 // E2E verification of the Rate Card system (report v4.32).
 //
@@ -394,6 +395,87 @@ async function main() {
   push('siblings: an item on NO card still errors, naming what was searched',
     has(eNeither, '没有匹配的计费项'));
 
+  // ═══ Contract discount (0.70 – 1.00) ═══════════════════════════════
+
+  const disc = await svc.create({
+    name: `${TAG} discount`, type: 'EXTRA', effectiveAt: past,
+    items: [
+      { itemCode: 'D_FLAT', chargeUnit: 'PER_ITEM', unitPrice: 100 },
+      { itemCode: 'D_MINFEE', chargeUnit: 'PER_ITEM', unitPrice: 100, minFee: 90 },
+      { itemCode: 'D_QOR', chargeUnit: 'PER_ITEM', quoteOnRequest: true },
+    ],
+  });
+  await svc.activate(disc.id);
+
+  const qd = (itemCode: string, quantity?: number) =>
+    svc.quote({ customerId: cust.id, type: 'EXTRA', itemCode, quantity });
+
+  // ─── Range enforcement: refuse, never clamp ─────────────────────────
+  for (const bad of [0.699, 0.5, 0, -1, 1.01, 2]) {
+    const e = await expectErr(() =>
+      svc.assign({ customerId: cust.id, rateCardId: disc.id, discountRatio: bad }),
+    );
+    push(`floor: discountRatio ${bad} is rejected`, has(e, '折扣系数'));
+  }
+
+  // The DB is the last line of defence — a script writing Prisma directly must
+  // still be stopped by the CHECK constraint.
+  const eRaw = await expectErr(() =>
+    prisma.customerRateCard.create({
+      data: { customerId: cust.id, rateCardId: disc.id, priority: 0, discountRatio: 0.5 },
+    }),
+  );
+  push('floor: the DB CHECK stops a direct write below 0.70', eRaw !== null);
+
+  // ─── The boundaries themselves are valid ────────────────────────────
+  await svc.assign({ customerId: cust.id, rateCardId: disc.id, priority: 90, discountRatio: MIN });
+  const atFloor = await qd('D_FLAT');
+  push('floor: exactly 0.70 IS allowed (it is the floor, not past it)', atFloor.unitPrice === 70);
+  push('discount: amount reflects the discounted rate', atFloor.amount === 70);
+  push('discount: the list price is still reported alongside it',
+    (atFloor as any).listUnitPrice === 100 && (atFloor as any).listAmount === 100);
+  push('discount: the ratio is echoed back', atFloor.discountRatio === MIN);
+
+  await svc.assign({ customerId: cust.id, rateCardId: disc.id, priority: 90, discountRatio: 1 });
+  const atList = await qd('D_FLAT');
+  push('discount: 1.00 is list price', atList.unitPrice === 100 && atList.discountApplied === false);
+
+  await svc.assign({ customerId: cust.id, rateCardId: disc.id, priority: 90, discountRatio: 0.85 });
+  const mid = await qd('D_FLAT');
+  push('discount: 0.85 → 85', mid.unitPrice === 85 && mid.discountApplied === true);
+  push('discount: multiplies through quantity (85 × 3)', (await qd('D_FLAT', 3)).amount === 255);
+
+  // Re-assigning updates the ratio in place rather than creating a second link.
+  const links = await prisma.customerRateCard.count({
+    where: { customerId: cust.id, rateCardId: disc.id },
+  });
+  push('discount: re-assigning updates the existing link, not a duplicate', links === 1);
+
+  // ─── Interaction with minFee ────────────────────────────────────────
+  const floored = await qd('D_MINFEE');
+  push('discount+minFee: minFee is an absolute floor, NOT discounted',
+    floored.amount === 90 && (floored as any).minFeeApplied === true);
+  push('discount+minFee: above the floor the discount applies normally (85×2=170)',
+    (await qd('D_MINFEE', 2)).amount === 170);
+
+  // ─── Interaction with 面议 ───────────────────────────────────────────
+  const dq = await qd('D_QOR');
+  push('discount+面议: no price to discount, amount stays null',
+    dq.amount === null && dq.unitPrice === null && dq.discountRatio === 0.85);
+
+  // ─── Default (list-price) cards carry no negotiated ratio ───────────
+  const listOnly = await svc.quote({ type: 'EXTRA', itemCode: 'E2E_SVC' });
+  push('discount: a DEFAULT card is always billed at 1.00',
+    listOnly.discountRatio === 1 && listOnly.source === 'DEFAULT');
+
+  // ─── The discount follows the CARD, not the customer ────────────────
+  // sibling-A is assigned at full price; the discounted card must not bleed onto it.
+  const sibUndiscounted = await svc.quote({
+    customerId: cust.id, type: 'FULFILLMENT', itemCode: 'SIB_A',
+  });
+  push('discount: applies per assignment, not to every card the customer holds',
+    sibUndiscounted.discountRatio === 1 && sibUndiscounted.unitPrice === 7);
+
   // ═══ Audit ═════════════════════════════════════════════════════════
 
   const logs = await prisma.operationLog.findMany({
@@ -449,6 +531,14 @@ async function main() {
   const feeUnmapped: any = await fee.calculateFee({ ...feeBody, destination: 'M5V 2T6', carrier: 'E2E-EXPRESS' });
   push('fee: an unmapped postcode degrades to fallback WITH the reason attached',
     feeUnmapped.source === 'FALLBACK_MATRIX' && feeUnmapped.fallbackReason?.includes('不在价卡'));
+
+  // ─── The contract discount reaches the fee endpoint, not just quote() ─
+  await svc.assign({ customerId: cust.id, rateCardId: ship.id, priority: 1, discountRatio: 0.8 });
+  const feeDisc: any = await fee.calculateFee({ ...feeBody, destination: 'V6B 1A1', carrier: 'E2E-EXPRESS' });
+  push('fee: the customer discount is applied end-to-end (19 × 0.8 = 15.2)',
+    feeDisc.source === 'RATE_CARD' && feeDisc.estimatedFee === 15.2);
+  push('fee: the response still shows the undiscounted list rate for audit',
+    feeDisc.rateCard?.listUnitPrice === 19 && feeDisc.rateCard?.discountRatio === 0.8);
 
   // ═══ Report ════════════════════════════════════════════════════════
 
