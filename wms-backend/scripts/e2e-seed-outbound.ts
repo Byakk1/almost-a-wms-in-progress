@@ -1,6 +1,8 @@
 // One-off E2E seed for outbound: outbound order PENDING with 2 items.
-// Items are pre-picked (pickedQty=requiredQty) so complete-picking can succeed
-// without a real picking flow.
+// Items are seeded already picked (pickedQty=requiredQty) so a run can jump
+// straight to complete-picking. This is a deliberate shortcut for seeding a
+// starting state, NOT a workaround: since v4.31 picking has a real endpoint
+// (POST /outbound-orders/:id/pick), exercised by scripts/e2e-verify-picking.ts.
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';

@@ -95,16 +95,17 @@ async function main() {
   };
 
   // Walk ALLOCATED → PACKED so ship() is permitted. These steps are inventory-neutral
-  // (only allocate/ship/release touch stock). The pick-scan stage has no endpoint, so we
-  // pre-set pickedQty := requiredQty directly, mirroring scripts/e2e-seed-outbound.ts.
+  // (only allocate/ship/release touch stock). Picking now goes through the real
+  // pick() endpoint (v4.31); this used to pre-set pickedQty directly in the database
+  // because no endpoint existed to record a pick.
   const walkToPacked = async (orderId: string) => {
     const items = await prisma.outboundItem.findMany({
       where: { outboundOrderId: orderId }, include: { product: true },
     });
-    for (const it of items) {
-      await prisma.outboundItem.update({ where: { id: it.id }, data: { pickedQty: it.requiredQty } });
-    }
     await svc.startPicking(orderId);
+    for (const it of items) {
+      await svc.pick(orderId, { sku: it.product.sku, qty: it.requiredQty });
+    }
     await svc.completePicking(orderId);
     await svc.startPacking(orderId);
     for (const it of items) {

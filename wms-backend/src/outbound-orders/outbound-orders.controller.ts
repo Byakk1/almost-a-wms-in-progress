@@ -4,6 +4,7 @@ import { OutboundOrdersService } from './outbound-orders.service';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CreateOutboundOrderDto } from './dto/create-outbound-order.dto';
 import { BulkImportOutboundDto } from './dto/bulk-import-outbound.dto';
+import { PickOutboundItemDto } from './dto/pick-outbound-item.dto';
 
 @Controller()
 export class OutboundOrdersController {
@@ -61,6 +62,14 @@ export class OutboundOrdersController {
   @Post('outbound-orders/:id/start-picking')
   async startPicking(@Param('id') id: string) {
     return ok(await this.svc.startPicking(id));
+  }
+
+  // ─── Action: 拣货登记 ───────────────────────────────────────────────
+
+  @Roles('SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'OPERATOR')
+  @Post('outbound-orders/:id/pick')
+  async pick(@Param('id') id: string, @Body() body: PickOutboundItemDto) {
+    return ok(await this.svc.pick(id, body));
   }
 
   // ─── Action: 拣货完成 ───────────────────────────────────────────────
@@ -145,5 +154,14 @@ export class OutboundOrdersController {
   @Get('outbound-exceptions')
   async exceptions() {
     return ok(await this.svc.exceptions());
+  }
+
+  @Roles('SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'OPERATOR')
+  @Post('outbound-exceptions/:id/resolve')
+  async resolveException(
+    @Param('id') id: string,
+    @Body() body: { resolution?: string },
+  ) {
+    return ok(await this.svc.resolveException(id, body ?? {}));
   }
 }

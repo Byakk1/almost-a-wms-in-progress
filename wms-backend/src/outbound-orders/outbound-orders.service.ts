@@ -6,6 +6,7 @@ import { OperationLogService } from '../common/operation-log.service';
 import { InventoryTransactionService } from '../common/inventory-transaction.service';
 import { dailyPrefix, nextDocNo, isUniqueViolation } from '../common/doc-no';
 import { CreateOutboundOrderDto } from './dto/create-outbound-order.dto';
+import { PickOutboundItemDto } from './dto/pick-outbound-item.dto';
 
 @Injectable()
 export class OutboundOrdersService {
@@ -296,6 +297,79 @@ export class OutboundOrdersService {
     });
 
     return updated;
+  }
+
+  // ─── Action: Pick (拣货登记) ────────────────────────────────────────
+
+  /**
+   * Record a physical pick against one SKU on the order.
+   *
+   * This closes the PICKING → PICKED gap: `completePicking` requires every item to
+   * satisfy `pickedQty >= requiredQty`, but before this endpoint existed NOTHING in
+   * the codebase ever wrote `pickedQty` (it was read in three places and written in
+   * none), so no order could progress past PICKING except by editing the database
+   * directly — which is exactly what the E2E seeds did.
+   *
+   * Shaped after the two existing scan contracts, ReceivingOrdersService.receive and
+   * OutboundOrdersService.pack: match by SKU, accumulate server-side, refuse to
+   * exceed the required quantity.
+   */
+  async pick(id: string, body: PickOutboundItemDto) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.outboundOrder.findUnique({
+        where: { id },
+        include: { items: { include: { product: true } } },
+      });
+      if (!order) throw new NotFoundException('出库单不存在');
+
+      // Picking is only meaningful once the order is actually being picked.
+      if (order.status !== 'PICKING') {
+        throw new BadRequestException(
+          `当前状态 [${order.status}] 不允许拣货登记，需先开始拣货`,
+        );
+      }
+
+      const item = order.items.find((i) => i.product.sku === body.sku);
+      if (!item) throw new NotFoundException(`订单中不存在 SKU: ${body.sku}`);
+
+      const newPickedQty = item.pickedQty + Number(body.qty);
+      if (newPickedQty > item.requiredQty) {
+        throw new BadRequestException(
+          `拣货数量超出需求：已拣 ${item.pickedQty}，本次 ${body.qty}，需求 ${item.requiredQty}`,
+        );
+      }
+
+      const updated = await tx.outboundItem.update({
+        where: { id: item.id },
+        data: { pickedQty: newPickedQty },
+      });
+
+      await this.opLog.log(
+        {
+          entityType: 'OUTBOUND_ORDER', entityId: id, action: 'PICK',
+          beforeData: { sku: body.sku, pickedQty: item.pickedQty },
+          afterData: { sku: body.sku, pickedQty: newPickedQty, requiredQty: item.requiredQty },
+          description: `出库单 ${order.orderNo} 拣货 ${body.sku} × ${body.qty}（${newPickedQty}/${item.requiredQty}）`,
+        },
+        tx,
+      );
+
+      // Recomputed over the freshly written row so the caller can tell, in one
+      // round trip, whether completePicking will now be accepted.
+      const allPicked = order.items.every((i) =>
+        i.id === item.id ? newPickedQty >= i.requiredQty : i.pickedQty >= i.requiredQty,
+      );
+
+      return {
+        orderId: order.id,
+        orderNo: order.orderNo,
+        sku: body.sku,
+        pickedQty: updated.pickedQty,
+        requiredQty: item.requiredQty,
+        allPicked,
+        status: order.status,
+      };
+    });
   }
 
   // ─── Action: Complete Picking (拣货完成) ────────────────────────────
@@ -612,6 +686,61 @@ export class OutboundOrdersService {
       status: ex.status,
       createdAt: ex.createdAt,
     }));
+  }
+
+  /**
+   * Close an outbound exception record (OPEN → RESOLVED).
+   *
+   * Before this existed, `status` was written as 'OPEN' at creation and no code path
+   * anywhere could change it — the column was effectively write-once, which is why
+   * the 出货异常 page could only ever be a read-only list.
+   *
+   * Deliberately does NOT touch the parent order. An order parked in EXCEPTION can go
+   * to either PENDING (retry) or CANCELLED (abandon) per OUTBOUND_TRANSITIONS, and
+   * choosing between those is an operator decision; auto-moving the order here would
+   * silently make it for them. The two actions stay independent.
+   *
+   * The optional `resolution` note is recorded in the OperationLog rather than a new
+   * column — OutboundException has no resolution/resolvedBy/resolvedAt fields, and the
+   * audit row already carries the actor and timestamp, so no schema change is needed.
+   */
+  async resolveException(exceptionId: string, body: { resolution?: string }) {
+    return this.prisma.$transaction(async (tx) => {
+      const ex = await tx.outboundException.findUnique({
+        where: { id: exceptionId },
+        include: { outboundOrder: { select: { orderNo: true } } },
+      });
+      if (!ex) throw new NotFoundException('异常记录不存在');
+
+      if (ex.status !== 'OPEN') {
+        throw new BadRequestException(`异常记录状态 [${ex.status}] 不允许处理，仅 OPEN 可关闭`);
+      }
+
+      const updated = await tx.outboundException.update({
+        where: { id: exceptionId },
+        data: { status: 'RESOLVED' },
+      });
+
+      await this.opLog.log(
+        {
+          entityType: 'OUTBOUND_EXCEPTION', entityId: exceptionId, action: 'RESOLVE',
+          beforeData: { status: 'OPEN' },
+          afterData: { status: 'RESOLVED', resolution: body.resolution ?? null },
+          description: `异常 ${ex.exceptionNo}（出库单 ${ex.outboundOrder?.orderNo ?? '—'}）已关闭${body.resolution ? `：${body.resolution}` : ''}`,
+        },
+        tx,
+      );
+
+      return {
+        id: updated.id,
+        exceptionNo: updated.exceptionNo,
+        orderNo: ex.outboundOrder?.orderNo ?? null,
+        type: updated.type,
+        reason: updated.reason,
+        status: updated.status,
+        createdAt: updated.createdAt,
+      };
+    });
   }
 
   // ─── Helper ─────────────────────────────────────────────────────────
