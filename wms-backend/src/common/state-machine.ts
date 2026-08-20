@@ -70,3 +70,14 @@ export const BOX_TRANSITIONS: TransitionMap<string> = {
   SIGNED_OUT:  [],  // terminal
 };
 
+// ─── Rate Card (价卡) State Machine ──────────────────────────────────
+// There is no ACTIVE → DRAFT edge on purpose: an ACTIVE card may already have
+// priced a bill, so its numbers are frozen. A price change means a NEW card with
+// a later effectiveAt — the old one is ARCHIVED, never rewritten.
+
+export const RATE_CARD_TRANSITIONS: TransitionMap<string> = {
+  DRAFT:     ['ACTIVE', 'ARCHIVED'],
+  ACTIVE:    ['ARCHIVED'],
+  ARCHIVED:  [],  // terminal
+};
+

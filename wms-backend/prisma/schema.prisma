@@ -112,6 +112,7 @@ model Customer {
   outboundOrders  OutboundOrder[]
   transitOrders   TransitOrder[]
   bills           CustomerBill[]
+  rateCards       CustomerRateCard[]
 }
 
 model CustomerTransaction {
@@ -658,4 +659,89 @@ model WaveOrder {
 
   @@unique([waveId, outboundOrderId])
   @@index([outboundOrderId])
+}
+
+// ─── Rate Card system (价卡) ────────────────────────────────────────
+//
+// Replaces the hardcoded rateMatrix in fee.service.ts. A RateCard is one
+// commercial price list, temporally dated; RateCardItem is a priced line —
+// either a tier band (0–15 days @ 1.20) or a flat named service (拍照 @ 2.80).
+//
+// SHIPPING needs two lookups, not one: postcode → zone (ShippingZone), then
+// (zone, weight band) → price (RateCardItem.zone + tierBasis=WEIGHT_KG).
+//
+// type / status / chargeUnit / tierBasis are String, not Prisma enums — see the
+// note in prisma/sql/rate_card_additive.sql. Allowed values live in
+// src/rate-cards/rate-card.constants.ts and are enforced by the DTOs.
+
+model RateCard {
+  id          String    @id @default(cuid())
+  name        String
+  type        String // STORAGE 仓储 | FULFILLMENT 操作 | SHIPPING 运费 | EXTRA 增值
+  carrier     String? // SHIPPING only — one card per carrier
+  currency    String    @default("CAD")
+  isDefault   Boolean   @default(false) // list price used when a customer has no assignment
+  effectiveAt DateTime
+  expiredAt   DateTime? // null = open-ended
+  status      String    @default("DRAFT") // DRAFT | ACTIVE | ARCHIVED
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items     RateCardItem[]
+  zones     ShippingZone[]
+  customers CustomerRateCard[]
+
+  @@index([type, status, effectiveAt])
+}
+
+model RateCardItem {
+  id         String   @id @default(cuid())
+  rateCardId String
+  rateCard   RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+
+  itemCode String? // OUTBOUND_PICK | UNLOAD_40HQ | PHOTO …
+  itemName String?
+  zone     String? // SHIPPING only; joins ShippingZone.zone
+
+  tierBasis  String   @default("NONE") // NONE | WEIGHT_KG | STORAGE_DAYS | VOLUME_CBM | QUANTITY
+  rangeStart Decimal? @db.Decimal(12, 3) // inclusive; null = 0
+  rangeEnd   Decimal? @db.Decimal(12, 3) // exclusive; null = ∞
+
+  chargeUnit     String // PER_CBM_DAY | PER_CBM | PER_KG | PER_PALLET | PER_CARTON | PER_CONTAINER | PER_ORDER | PER_ITEM | PER_LABEL
+  unitPrice      Decimal? @db.Decimal(12, 4) // null only when quoteOnRequest
+  minFee         Decimal? @db.Decimal(10, 2)
+  quoteOnRequest Boolean  @default(false) // 面议 / 详细请咨询客服
+  note           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([rateCardId, tierBasis, rangeStart])
+  @@index([rateCardId, zone])
+  @@index([rateCardId, itemCode])
+}
+
+model ShippingZone {
+  id          String   @id @default(cuid())
+  rateCardId  String
+  rateCard    RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+  destination String // postcode prefix / FSA — longest match wins
+  zone        String
+  createdAt   DateTime @default(now())
+
+  @@unique([rateCardId, destination])
+  @@index([rateCardId, zone])
+}
+
+model CustomerRateCard {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  rateCardId String
+  rateCard   RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+  priority   Int      @default(0) // higher wins
+  createdAt  DateTime @default(now())
+
+  @@unique([customerId, rateCardId])
+  @@index([customerId, priority])
 }

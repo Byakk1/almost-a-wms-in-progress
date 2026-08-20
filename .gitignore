@@ -24,6 +24,31 @@
 **/*rate-card*.sql
 **/seed-rates*
 
+# …but the rate card MODULE is CODE, not prices, and `**/rate-card*` above matches
+# its directory name. Without these negations the whole module vanishes from every
+# commit — silently, since git never reports files it was told to ignore.
+# Git will not descend into an ignored directory, so the directory itself must be
+# re-included before its contents can be.
+!wms-backend/src/rate-cards/
+!wms-backend/src/rate-cards/**
+!wms-frontend/src/pages/RateCard/
+!wms-frontend/src/pages/RateCard/**
+
+# Re-assert the DATA rules after those negations (last matching pattern wins), so
+# re-including the module directories cannot become a hole to smuggle a price dump
+# through. Source files are .ts; anything below is data and stays blocked everywhere.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.tsv
+**/价卡*
+**/*rate-card*.json
+**/*rate-card*.sql
+**/*ratecard*.json
+**/*ratecard*.sql
+**/seed-rates*
+
 # ── Dependencies & build output ──
 node_modules/
 dist/
