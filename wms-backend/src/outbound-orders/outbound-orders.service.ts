@@ -4,6 +4,7 @@ import { OutboundOrderStatus } from '@prisma/client';
 import { assertTransition, OUTBOUND_TRANSITIONS } from '../common/state-machine';
 import { OperationLogService } from '../common/operation-log.service';
 import { InventoryTransactionService } from '../common/inventory-transaction.service';
+import { dailyPrefix, nextDocNo, isUniqueViolation } from '../common/doc-no';
 import { CreateOutboundOrderDto } from './dto/create-outbound-order.dto';
 
 @Injectable()
@@ -499,33 +500,52 @@ export class OutboundOrdersService {
   // ─── Action: Mark Exception ─────────────────────────────────────────
 
   async markException(id: string, body: { type: string; reason?: string }) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.outboundOrder.findUnique({ where: { id } });
-      if (!order) throw new NotFoundException('出库单不存在');
-      assertTransition(order.status, 'EXCEPTION', OUTBOUND_TRANSITIONS, '出库单');
+    // exceptionNo is generated inside the transaction, so a unique-constraint clash
+    // is only recoverable by re-running the whole transaction.
+    const MAX_TRIES = 5;
 
-      // Release any reservations back to available before parking the order.
-      await this.releaseAllocations(tx, order);
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const order = await tx.outboundOrder.findUnique({ where: { id } });
+          if (!order) throw new NotFoundException('出库单不存在');
+          assertTransition(order.status, 'EXCEPTION', OUTBOUND_TRANSITIONS, '出库单');
 
-      // Create exception record
-      const exCount = await tx.outboundException.count();
-      const exceptionNo = `EX-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${String(exCount + 1).padStart(4, '0')}`;
+          // Release any reservations back to available before parking the order.
+          await this.releaseAllocations(tx, order);
 
-      await tx.outboundException.create({
-        data: {
-          exceptionNo,
-          outboundOrderId: id,
-          type: body.type,
-          reason: body.reason,
-          status: 'OPEN',
-        },
-      });
+          // Per-day sequential exceptionNo from the highest existing number for
+          // today's prefix — delete-safe, unlike the old count()+1.
+          const prefix = dailyPrefix('EX');
+          const last = await tx.outboundException.findFirst({
+            where: { exceptionNo: { startsWith: prefix } },
+            orderBy: { exceptionNo: 'desc' },
+            select: { exceptionNo: true },
+          });
+          const exceptionNo = nextDocNo(prefix, last?.exceptionNo ?? null);
 
-      return tx.outboundOrder.update({
-        where: { id },
-        data: { status: 'EXCEPTION' },
-      });
-    });
+          await tx.outboundException.create({
+            data: {
+              exceptionNo,
+              outboundOrderId: id,
+              type: body.type,
+              reason: body.reason,
+              status: 'OPEN',
+            },
+          });
+
+          return tx.outboundOrder.update({
+            where: { id },
+            data: { status: 'EXCEPTION' },
+          });
+        });
+      } catch (e) {
+        if (isUniqueViolation(e) && attempt < MAX_TRIES) continue;
+        throw e;
+      }
+    }
+
+    throw new BadRequestException('生成异常单号冲突，请重试');
   }
 
   // ─── Action: Cancel (取消) ──────────────────────────────────────────

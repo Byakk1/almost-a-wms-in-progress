@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ReceivingOrderStatus } from '@prisma/client';
 import { assertTransition, RECEIVING_TRANSITIONS } from '../common/state-machine';
 import { OperationLogService } from '../common/operation-log.service';
+import { dailyPrefix, nextDocNo, isUniqueViolation } from '../common/doc-no';
 
 interface ListReceivingQuery {
   page?: number;
@@ -67,28 +68,47 @@ export class ReceivingOrdersService {
     expectedQuantity: number;
     items?: Array<{ productId: string; expectedQty: number }>;
   }) {
-    const count = await this.prisma.receivingOrder.count();
-    const receivingNo = `IN-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${String(count + 1).padStart(4, '0')}`;
+    // Per-day sequential receivingNo derived from the highest existing number for
+    // today's prefix — delete-safe, unlike the old count()+1. The bounded retry
+    // covers a concurrent clash on the receivingNo unique constraint.
+    const prefix = dailyPrefix('IN');
+    const MAX_TRIES = 5;
 
-    return this.prisma.receivingOrder.create({
-      data: {
-        receivingNo,
-        customerId: body.customerId,
-        warehouseId: body.warehouseId,
-        trackingNo: body.trackingNo,
-        expectedQuantity: body.expectedQuantity,
-        status: 'PENDING',
-        items: body.items
-          ? {
-              create: body.items.map((i) => ({
-                productId: i.productId,
-                expectedQty: i.expectedQty,
-              })),
-            }
-          : undefined,
-      },
-      include: { items: true },
-    });
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      const last = await this.prisma.receivingOrder.findFirst({
+        where: { receivingNo: { startsWith: prefix } },
+        orderBy: { receivingNo: 'desc' },
+        select: { receivingNo: true },
+      });
+      const receivingNo = nextDocNo(prefix, last?.receivingNo ?? null);
+
+      try {
+        return await this.prisma.receivingOrder.create({
+          data: {
+            receivingNo,
+            customerId: body.customerId,
+            warehouseId: body.warehouseId,
+            trackingNo: body.trackingNo,
+            expectedQuantity: body.expectedQuantity,
+            status: 'PENDING',
+            items: body.items
+              ? {
+                  create: body.items.map((i) => ({
+                    productId: i.productId,
+                    expectedQty: i.expectedQty,
+                  })),
+                }
+              : undefined,
+          },
+          include: { items: true },
+        });
+      } catch (e) {
+        if (isUniqueViolation(e) && attempt < MAX_TRIES) continue;
+        throw e;
+      }
+    }
+
+    throw new BadRequestException('生成收货单号冲突，请重试');
   }
 
   // ─── Detail ─────────────────────────────────────────────────────────
@@ -212,57 +232,81 @@ export class ReceivingOrdersService {
   // ─── Action: Complete (完成收货) ────────────────────────────────────
 
   async complete(id: string) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.receivingOrder.findUnique({
-        where: { id },
-        include: { items: { include: { product: true } } },
-      });
-      if (!order) throw new NotFoundException('收货单不存在');
-      assertTransition(order.status, 'COMPLETED', RECEIVING_TRANSITIONS, '收货单');
+    // taskNo is generated inside the transaction, so a unique-constraint clash can
+    // only be recovered by re-running the whole transaction — a retry *inside* it
+    // would hit an already-aborted transaction. Same shape as BoxesService.create.
+    const MAX_TRIES = 5;
 
-      // Update order status
-      await tx.receivingOrder.update({
-        where: { id },
-        data: { status: 'COMPLETED' },
-      });
-
-      // Auto-generate putaway tasks for each received item
-      const putawayTasks: any[] = [];
-      for (const item of order.items) {
-        if (item.receivedQty > 0) {
-          const taskCount = await tx.putawayTask.count();
-          const taskNo = `PT-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${String(taskCount + 1).padStart(3, '0')}`;
-
-          const task = await tx.putawayTask.create({
-            data: {
-              taskNo,
-              receivingOrderId: order.id,
-              productId: item.productId,
-              warehouseId: order.warehouseId,
-              qty: item.receivedQty,
-              status: 'PENDING',
-            },
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const order = await tx.receivingOrder.findUnique({
+            where: { id },
+            include: { items: { include: { product: true } } },
           });
-          putawayTasks.push(task);
-        }
+          if (!order) throw new NotFoundException('收货单不存在');
+          assertTransition(order.status, 'COMPLETED', RECEIVING_TRANSITIONS, '收货单');
+
+          // Update order status
+          await tx.receivingOrder.update({
+            where: { id },
+            data: { status: 'COMPLETED' },
+          });
+
+          // Per-day sequential taskNo from the highest existing number for today's
+          // prefix (delete-safe), read once and then advanced per task.
+          const prefix = dailyPrefix('PT');
+          const lastTask = await tx.putawayTask.findFirst({
+            where: { taskNo: { startsWith: prefix } },
+            orderBy: { taskNo: 'desc' },
+            select: { taskNo: true },
+          });
+          let lastNo = lastTask?.taskNo ?? null;
+
+          // Auto-generate putaway tasks for each received item
+          const putawayTasks: any[] = [];
+          for (const item of order.items) {
+            if (item.receivedQty > 0) {
+              const taskNo = nextDocNo(prefix, lastNo, 3);
+              lastNo = taskNo;
+
+              const task = await tx.putawayTask.create({
+                data: {
+                  taskNo,
+                  receivingOrderId: order.id,
+                  productId: item.productId,
+                  warehouseId: order.warehouseId,
+                  qty: item.receivedQty,
+                  status: 'PENDING',
+                },
+              });
+              putawayTasks.push(task);
+            }
+          }
+
+          // Move to PUTAWAY_PENDING
+          const updatedOrder = await tx.receivingOrder.update({
+            where: { id },
+            data: { status: 'PUTAWAY_PENDING' },
+          });
+
+          // Audit log
+          await this.opLog.log({
+            entityType: 'RECEIVING_ORDER', entityId: id, action: 'COMPLETE',
+            beforeData: { status: order.status },
+            afterData: { status: 'PUTAWAY_PENDING', putawayTaskCount: putawayTasks.length },
+            description: `收货单 ${order.receivingNo} 完成收货，生成 ${putawayTasks.length} 个上架任务`,
+          }, tx);
+
+          return { receivingOrder: updatedOrder, createdPutawayTasks: putawayTasks };
+        });
+      } catch (e) {
+        if (isUniqueViolation(e) && attempt < MAX_TRIES) continue;
+        throw e;
       }
+    }
 
-      // Move to PUTAWAY_PENDING
-      const updatedOrder = await tx.receivingOrder.update({
-        where: { id },
-        data: { status: 'PUTAWAY_PENDING' },
-      });
-
-      // Audit log
-      await this.opLog.log({
-        entityType: 'RECEIVING_ORDER', entityId: id, action: 'COMPLETE',
-        beforeData: { status: order.status },
-        afterData: { status: 'PUTAWAY_PENDING', putawayTaskCount: putawayTasks.length },
-        description: `收货单 ${order.receivingNo} 完成收货，生成 ${putawayTasks.length} 个上架任务`,
-      }, tx);
-
-      return { receivingOrder: updatedOrder, createdPutawayTasks: putawayTasks };
-    });
+    throw new BadRequestException('生成上架任务号冲突，请重试');
   }
 
   // ─── Action: Mark Exception (异常) ─────────────────────────────────
