@@ -64,6 +64,9 @@ export class QuoteDto {
   @IsOptional() @IsString()
   destination?: string; // SHIPPING: postcode, resolved to a zone
 
+  @IsOptional() @IsString()
+  origin?: string; // SHIPPING: shipping warehouse — same postcode, different zone
+
   @IsOptional()
   @IsIn(TIER_BASES as unknown as string[], {
     message: `梯度基准无效，可选：${TIER_BASES.join(' / ')}`,

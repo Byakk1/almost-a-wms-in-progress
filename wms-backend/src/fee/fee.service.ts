@@ -40,6 +40,13 @@ export interface CalculateFeeBody {
   destination?: string;
   /** Carrier name as it appears on the rate card header. */
   carrier?: string;
+  /**
+   * Shipping warehouse, as labelled in the carrier's zone table (e.g. 多伦多).
+   * NOT derived from `warehouseId`: the zone tables key on the carrier's own
+   * origin labels, and no mapping from our Warehouse rows to those labels exists
+   * yet. Passing it explicitly beats guessing one.
+   */
+  origin?: string;
   /** Quote as-of; lets a bill reprint at the prices that were live when issued. */
   at?: string;
 }
@@ -84,6 +91,7 @@ export class FeeService {
           type: 'SHIPPING',
           carrier: body.carrier,
           destination: body.destination,
+          origin: body.origin,
           tierBasis: 'WEIGHT_KG',
           value: chargeableWeight,
           quantity,

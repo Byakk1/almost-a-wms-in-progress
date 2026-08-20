@@ -64,6 +64,14 @@ export class RateCardItemDto {
 
 /** postcode prefix → zone, for SHIPPING cards. Longest prefix wins at lookup. */
 export class ShippingZoneDto {
+  /**
+   * Shipping warehouse. The same postcode sits in a different zone depending on
+   * where it ships FROM, so the real zone tables carry one column per origin.
+   * Omit for a single-origin card; "" is then the key.
+   */
+  @IsOptional() @IsString()
+  origin?: string;
+
   @IsString()
   @IsNotEmpty({ message: '目的地前缀不能为空（destination）' })
   destination!: string;

@@ -88,8 +88,9 @@ export class RateCardsController {
     @Query('page') page?: number,
     @Query('pageSize') pageSize?: number,
     @Query('zone') zone?: string,
+    @Query('origin') origin?: string,
   ) {
-    const r = await this.svc.listZones(id, { page, pageSize, zone });
+    const r = await this.svc.listZones(id, { page, pageSize, zone, origin });
     return ok(r.data, r.pagination);
   }
 

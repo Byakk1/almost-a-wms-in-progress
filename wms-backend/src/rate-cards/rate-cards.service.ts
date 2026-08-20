@@ -86,15 +86,16 @@ export class RateCardsService {
     };
   }
 
-  async listZones(id: string, q: { page?: number; pageSize?: number; zone?: string }) {
+  async listZones(id: string, q: { page?: number; pageSize?: number; zone?: string; origin?: string }) {
     const page = Number(q.page) || 1;
     const pageSize = Math.min(Number(q.pageSize) || 50, 500);
     const where: any = { rateCardId: id };
     if (q.zone) where.zone = q.zone;
+    if (q.origin !== undefined) where.origin = q.origin;
 
     const [data, total] = await Promise.all([
       this.prisma.shippingZone.findMany({
-        where, orderBy: { destination: 'asc' },
+        where, orderBy: [{ origin: 'asc' }, { destination: 'asc' }],
         skip: (page - 1) * pageSize, take: pageSize,
       }),
       this.prisma.shippingZone.count({ where }),
@@ -264,13 +265,16 @@ export class RateCardsService {
   // ─── The engine ─────────────────────────────────────────────────────
 
   /**
-   * Which card applies to this customer, for this fee type, at this instant?
+   * Every card that could apply, best first: customer assignments by priority,
+   * then the default list prices.
    *
-   * Customer assignment first (highest priority wins), then the default list
-   * price. `at` defaults to now but is a parameter so a bill reprinted next year
-   * still resolves to the prices that were live when it was issued.
+   * Plural on purpose. One `type` routinely spans several cards — the real
+   * workbook has a 一件代发 fulfillment card AND an FBA转运 fulfillment card, each
+   * carrying different itemCodes. Resolving to a single card would make whichever
+   * one lost the sort permanently unreachable, and the symptom is a confusing
+   * "no matching item" on a card the caller never asked for.
    */
-  async resolveCard(params: {
+  private async resolveCandidates(params: {
     customerId?: string; type: string; carrier?: string; at?: Date;
   }) {
     const at = params.at ?? new Date();
@@ -282,21 +286,39 @@ export class RateCardsService {
       ...(params.carrier ? { carrier: params.carrier } : {}),
     };
 
+    const out: Array<{ card: any; source: 'CUSTOMER' | 'DEFAULT' }> = [];
+
     if (params.customerId) {
       const assigned = await this.prisma.customerRateCard.findMany({
         where: { customerId: params.customerId, rateCard: dated },
         include: { rateCard: true },
         orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
-        take: 1,
       });
-      if (assigned.length) return { card: assigned[0].rateCard, source: 'CUSTOMER' as const };
+      out.push(...assigned.map((a) => ({ card: a.rateCard, source: 'CUSTOMER' as const })));
     }
 
-    const fallback = await this.prisma.rateCard.findFirst({
+    const seen = new Set(out.map((o) => o.card.id));
+    const defaults = await this.prisma.rateCard.findMany({
       where: { ...dated, isDefault: true },
       orderBy: [{ effectiveAt: 'desc' }, { createdAt: 'desc' }],
     });
-    if (!fallback) {
+    out.push(
+      ...defaults.filter((d) => !seen.has(d.id)).map((d) => ({ card: d, source: 'DEFAULT' as const })),
+    );
+
+    return out;
+  }
+
+  /**
+   * Which card applies to this customer, for this fee type, at this instant?
+   * The best candidate — see resolveCandidates for why quoting walks the whole
+   * list rather than trusting this one.
+   */
+  async resolveCard(params: {
+    customerId?: string; type: string; carrier?: string; at?: Date;
+  }) {
+    const candidates = await this.resolveCandidates(params);
+    if (!candidates.length) {
       throw new NotFoundException(
         `未找到适用的价卡：type=${params.type}` +
         `${params.carrier ? ` carrier=${params.carrier}` : ''}` +
@@ -304,47 +326,75 @@ export class RateCardsService {
         `，且没有可用的默认价卡`,
       );
     }
-    return { card: fallback, source: 'DEFAULT' as const };
+    return candidates[0];
   }
 
   /** What does this cost? Resolves the card, matches the tier, computes the amount. */
   async quote(dto: QuoteDto) {
     const at = dto.at ? new Date(dto.at) : new Date();
-    const { card, source } = await this.resolveCard({
+    const candidates = await this.resolveCandidates({
       customerId: dto.customerId, type: dto.type, carrier: dto.carrier, at,
-    });
-
-    // SHIPPING: postcode → zone is the first of two lookups.
-    let zone: string | null = null;
-    if (card.type === 'SHIPPING') {
-      if (!dto.destination) throw new BadRequestException('运费询价必须提供目的地（destination）');
-      zone = await this.resolveZone(card.id, dto.destination);
-      if (!zone) {
-        throw new NotFoundException(
-          `目的地 ${dto.destination} 不在价卡 ${card.name} 的分区表中`,
-        );
-      }
-    }
-
-    const where: any = { rateCardId: card.id };
-    if (dto.itemCode) where.itemCode = dto.itemCode;
-    if (zone) where.zone = zone;
-    if (dto.tierBasis) where.tierBasis = dto.tierBasis;
-
-    const candidates = await this.prisma.rateCardItem.findMany({
-      where, orderBy: { rangeStart: 'asc' },
     });
     if (!candidates.length) {
       throw new NotFoundException(
-        `价卡 ${card.name} 中没有匹配的计费项` +
-        `${dto.itemCode ? `（itemCode=${dto.itemCode}）` : ''}${zone ? `（zone=${zone}）` : ''}`,
+        `未找到适用的价卡：type=${dto.type}` +
+        `${dto.carrier ? ` carrier=${dto.carrier}` : ''}` +
+        `${dto.customerId ? ` customer=${dto.customerId}` : ''}` +
+        `，且没有可用的默认价卡`,
       );
     }
 
+    let zoneMiss: string | null = null;
+    const triedCards: string[] = [];
+
+    for (const { card, source } of candidates) {
+      // SHIPPING: postcode → zone is the first of two lookups.
+      let zone: string | null = null;
+      if (card.type === 'SHIPPING') {
+        if (!dto.destination) throw new BadRequestException('运费询价必须提供目的地（destination）');
+        zone = await this.resolveZone(card.id, dto.destination, dto.origin ?? '');
+        if (!zone) {
+          zoneMiss =
+            `目的地 ${dto.destination} 不在价卡 ${card.name} 的分区表中` +
+            `${dto.origin ? `（发货仓 ${dto.origin}）` : ''}`;
+          continue;
+        }
+      }
+
+      const where: any = { rateCardId: card.id };
+      if (dto.itemCode) where.itemCode = dto.itemCode;
+      if (zone) where.zone = zone;
+      if (dto.tierBasis) where.tierBasis = dto.tierBasis;
+
+      const items = await this.prisma.rateCardItem.findMany({ where, orderBy: { rangeStart: 'asc' } });
+      if (!items.length) {
+        // This card simply doesn't carry the requested item — try the next one.
+        triedCards.push(card.name);
+        continue;
+      }
+
+      return this.priceFrom(card, source, zone, items, dto);
+    }
+
+    if (zoneMiss) throw new NotFoundException(zoneMiss);
+    throw new NotFoundException(
+      `价卡 ${triedCards.join(' / ')} 中没有匹配的计费项` +
+      `${dto.itemCode ? `（itemCode=${dto.itemCode}）` : ''}`,
+    );
+  }
+
+  /** Tier match + arithmetic for one already-chosen card. */
+  private priceFrom(
+    card: any,
+    source: 'CUSTOMER' | 'DEFAULT',
+    zone: string | null,
+    candidates: any[],
+    dto: QuoteDto,
+  ) {
     const flat = candidates.filter((c) => c.tierBasis === 'NONE');
     const tiered = candidates.filter((c) => c.tierBasis !== 'NONE');
 
-    let item: (typeof candidates)[number] | undefined;
+    let item: any;
     if (tiered.length) {
       if (dto.value === undefined || dto.value === null) {
         throw new BadRequestException(
@@ -354,9 +404,7 @@ export class RateCardsService {
       const v = Number(dto.value);
       item = tiered.find((c) => v >= lo(c.rangeStart) && v < hi(c.rangeEnd));
       if (!item) {
-        throw new NotFoundException(
-          `计费数值 ${v} 未落入价卡 ${card.name} 的任何梯度区间`,
-        );
+        throw new NotFoundException(`计费数值 ${v} 未落入价卡 ${card.name} 的任何梯度区间`);
       }
     } else {
       if (flat.length > 1 && !dto.itemCode) {
@@ -368,15 +416,17 @@ export class RateCardsService {
     }
 
     const quantity = dto.quantity === undefined ? 1 : Number(dto.quantity);
+    const head = {
+      rateCardId: card.id, rateCardName: card.name, source, currency: card.currency,
+      zone, itemId: item.id, itemCode: item.itemCode, itemName: item.itemName,
+      chargeUnit: item.chargeUnit, tierBasis: item.tierBasis,
+      rangeStart: item.rangeStart, rangeEnd: item.rangeEnd,
+      quantity, note: item.note,
+    };
 
     if (item.quoteOnRequest || item.unitPrice === null) {
       return {
-        rateCardId: card.id, rateCardName: card.name, source, currency: card.currency,
-        zone, itemId: item.id, itemCode: item.itemCode, itemName: item.itemName,
-        chargeUnit: item.chargeUnit, tierBasis: item.tierBasis,
-        rangeStart: item.rangeStart, rangeEnd: item.rangeEnd,
-        unitPrice: null, quantity, amount: null,
-        quoteOnRequest: true, note: item.note,
+        ...head, unitPrice: null, amount: null, quoteOnRequest: true,
         // Deliberately NOT 0 — a 面议 line billed as zero is a silent revenue leak.
         message: '该项为面议价，需人工报价',
       };
@@ -387,25 +437,26 @@ export class RateCardsService {
     const amount = minFee !== null && raw < minFee ? minFee : raw;
 
     return {
-      rateCardId: card.id, rateCardName: card.name, source, currency: card.currency,
-      zone, itemId: item.id, itemCode: item.itemCode, itemName: item.itemName,
-      chargeUnit: item.chargeUnit, tierBasis: item.tierBasis,
-      rangeStart: item.rangeStart, rangeEnd: item.rangeEnd,
-      unitPrice: Number(item.unitPrice), quantity,
+      ...head,
+      unitPrice: Number(item.unitPrice),
       amount: money(amount),
       minFeeApplied: minFee !== null && raw < minFee,
-      quoteOnRequest: false, note: item.note,
+      quoteOnRequest: false,
     };
   }
 
-  /** Longest-prefix match: V6B beats V6 beats V. */
-  private async resolveZone(rateCardId: string, destination: string): Promise<string | null> {
+  /** Longest-prefix match within one origin: V6B beats V6 beats V. */
+  private async resolveZone(
+    rateCardId: string,
+    destination: string,
+    origin = '',
+  ): Promise<string | null> {
     const key = destination.replace(/\s+/g, '').toUpperCase();
     const prefixes: string[] = [];
     for (let n = key.length; n > 0; n--) prefixes.push(key.slice(0, n));
 
     const rows = await this.prisma.shippingZone.findMany({
-      where: { rateCardId, destination: { in: prefixes } },
+      where: { rateCardId, origin, destination: { in: prefixes } },
     });
     if (!rows.length) return null;
     rows.sort((a, b) => b.destination.length - a.destination.length);
@@ -459,6 +510,7 @@ function itemRow(rateCardId: string, i: RateCardItemDto) {
 function zoneRow(rateCardId: string, z: ShippingZoneDto) {
   return {
     rateCardId,
+    origin: z.origin ?? '',
     destination: z.destination.replace(/\s+/g, '').toUpperCase(),
     zone: z.zone,
   };

@@ -310,10 +310,53 @@ async function main() {
   push('shipping: zone import is idempotent (dupes skipped)',
     reimport.inserted === 1 && reimport2.inserted === 0);
 
+  // ─── Origin: the SAME postcode, a different zone per shipping warehouse ─────
+  // The real Canada Post / Intelcom / Purolator zone tables carry one column per
+  // origin (多伦多 / 温哥华). Without origin in the key the import would silently
+  // keep only whichever column was written last.
+  const multi = await svc.create({
+    name: `${TAG} ship-multi-origin`, type: 'SHIPPING', carrier: 'E2E-MULTI', effectiveAt: past,
+    items: [
+      { ...kg(0, undefined, 7), zone: 'ZT' },
+      { ...kg(0, undefined, 11), zone: 'ZV' },
+    ],
+    zones: [
+      { origin: '多伦多', destination: 'A0A', zone: 'ZT' },
+      { origin: '温哥华', destination: 'A0A', zone: 'ZV' },
+    ],
+  });
+  await svc.activate(multi.id);
+  await svc.assign({ customerId: cust.id, rateCardId: multi.id, priority: 1 });
+
+  const qo = (origin: string) =>
+    svc.quote({
+      customerId: cust.id, type: 'SHIPPING', carrier: 'E2E-MULTI',
+      destination: 'A0A', origin, value: 1,
+    });
+
+  const fromTO = await qo('多伦多');
+  const fromVA = await qo('温哥华');
+  push('origin: both origin rows survive the import (not deduped away)',
+    (await svc.listZones(multi.id, { pageSize: 10 })).pagination.total === 2);
+  push('origin: same postcode resolves to a DIFFERENT zone per warehouse',
+    fromTO.zone === 'ZT' && fromVA.zone === 'ZV');
+  push('origin: and therefore to a different price', fromTO.unitPrice === 7 && fromVA.unitPrice === 11);
+
+  const eWrongOrigin = await expectErr(() => qo('蒙特利尔'));
+  push('origin: an unknown origin does not silently fall back to another one',
+    has(eWrongOrigin, '不在价卡'));
+
+  push('origin: single-origin cards still work with origin omitted',
+    (await qs('V6C', 2)).zone === 'Z2');
+
   // ═══ Unresolvable lookups fail loudly ══════════════════════════════
 
+  // NB: filter by a carrier that cannot exist rather than by a bare type. Real
+  // imported cards now live in this database, so "no card of type STORAGE" stopped
+  // being true the moment the workbook was loaded — the old form of this check
+  // passed only because the table happened to be empty.
   const eNoCard = await expectErr(() =>
-    svc.quote({ customerId: cust.id, type: 'STORAGE', value: 1 }),
+    svc.quote({ customerId: cust.id, type: 'SHIPPING', carrier: 'E2E-NO-SUCH-CARRIER', destination: 'V6B', value: 1 }),
   );
   push('lookup: no card of that type → explicit error, not a silent 0', has(eNoCard, '未找到适用的价卡'));
 
@@ -321,6 +364,35 @@ async function main() {
     svc.quote({ customerId: cust.id, type: 'EXTRA', itemCode: 'NOPE' }),
   );
   push('lookup: no matching item → explicit error', has(eNoItem, '没有匹配的计费项'));
+
+  // ─── Sibling cards of the same type ─────────────────────────────────
+  // The real workbook puts 一件代发 and FBA转运 fulfilment prices on two separate
+  // cards of the SAME type. Resolving to one card would make the other's items
+  // permanently unreachable — quoting must walk every candidate.
+  const sibA = await svc.create({
+    name: `${TAG} sibling-A`, type: 'FULFILLMENT', effectiveAt: past,
+    items: [{ itemCode: 'SIB_A', chargeUnit: 'PER_ITEM', unitPrice: 7 }],
+  });
+  const sibB = await svc.create({
+    name: `${TAG} sibling-B`, type: 'FULFILLMENT', effectiveAt: past,
+    items: [{ itemCode: 'SIB_B', chargeUnit: 'PER_ITEM', unitPrice: 11 }],
+  });
+  await svc.activate(sibA.id); await svc.activate(sibB.id);
+  await svc.assign({ customerId: cust.id, rateCardId: sibA.id, priority: 80 });
+  await svc.assign({ customerId: cust.id, rateCardId: sibB.id, priority: 70 });
+
+  const onA = await svc.quote({ customerId: cust.id, type: 'FULFILLMENT', itemCode: 'SIB_A' });
+  const onB = await svc.quote({ customerId: cust.id, type: 'FULFILLMENT', itemCode: 'SIB_B' });
+  push('siblings: an item on the HIGHEST-priority card resolves', onA.unitPrice === 7);
+  push('siblings: an item on a LOWER-priority sibling is still reachable', onB.unitPrice === 11);
+  push('siblings: each quote reports the card it actually came from',
+    onA.rateCardName.endsWith('sibling-A') && onB.rateCardName.endsWith('sibling-B'));
+
+  const eNeither = await expectErr(() =>
+    svc.quote({ customerId: cust.id, type: 'FULFILLMENT', itemCode: 'SIB_MISSING' }),
+  );
+  push('siblings: an item on NO card still errors, naming what was searched',
+    has(eNeither, '没有匹配的计费项'));
 
   // ═══ Audit ═════════════════════════════════════════════════════════
 

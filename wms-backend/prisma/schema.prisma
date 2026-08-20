@@ -725,12 +725,17 @@ model ShippingZone {
   id          String   @id @default(cuid())
   rateCardId  String
   rateCard    RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+  // Shipping warehouse. The SAME postcode maps to a different zone from Toronto
+  // than from Vancouver (the real zone tables carry one column per origin), so
+  // origin is part of the key. "" = single-origin card.
+  origin      String   @default("")
   destination String // postcode prefix / FSA — longest match wins
   zone        String
   createdAt   DateTime @default(now())
 
-  @@unique([rateCardId, destination])
+  @@unique([rateCardId, origin, destination])
   @@index([rateCardId, zone])
+  @@index([rateCardId, origin])
 }
 
 model CustomerRateCard {
