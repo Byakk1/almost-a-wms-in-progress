@@ -38,9 +38,9 @@ import { RateCardItemDto } from '../src/rate-cards/dto/create-rate-card.dto';
 //   table with no prices at all, and is deliberately not imported.
 
 const TAG = '[价卡导入]';
-const DELTA = 0.001; // smallest step at Decimal(12,3) — the workbook's own granularity
+export const DELTA = 0.001; // smallest step at Decimal(12,3) — the workbook's own granularity
 
-type Parsed = {
+export type Parsed = {
   name: string;
   type: string;
   effectiveAt: string;
@@ -50,14 +50,14 @@ type Parsed = {
 
 // ─── cell helpers ─────────────────────────────────────────────────────
 
-const S = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim();
+export const S = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim();
 
 /** Non-numeric price forms that must become 面议 rather than 0. */
 const QUOTE_TEXTS = ['by case', '详细请咨询客服', '实报实销', '见仓租费用', '面议'];
 
-type Price = { unitPrice?: number; quoteOnRequest?: boolean; chargeUnit?: string; note?: string };
+export type Price = { unitPrice?: number; quoteOnRequest?: boolean; chargeUnit?: string; note?: string };
 
-function parsePrice(raw: any): Price | null {
+export function parsePrice(raw: any): Price | null {
   const t = S(raw);
   if (!t) return null;
   if (QUOTE_TEXTS.some((q) => t.toLowerCase().includes(q.toLowerCase()))) {
@@ -83,7 +83,7 @@ const UNIT_MAP: Record<string, string> = {
   '40hq': 'PER_CONTAINER', '45hq': 'PER_CONTAINER',
 };
 
-function mapUnit(raw: any, fallback = 'PER_ITEM'): string {
+export function mapUnit(raw: any, fallback = 'PER_ITEM'): string {
   const t = S(raw).toLowerCase();
   return UNIT_MAP[t] ?? fallback;
 }
@@ -92,7 +92,7 @@ function mapUnit(raw: any, fallback = 'PER_ITEM'): string {
  * Band text → (gt, lte].  Handles the full-width comparison signs the workbook
  * uses, plus the plain "0-15 days" / "8-30自然天" forms.
  */
-function parseBand(raw: any): { gt: number; lte: number | null } | null {
+export function parseBand(raw: any): { gt: number; lte: number | null } | null {
   const t = S(raw).replace(/[＜<]/g, '<').replace(/[＞>]/g, '>').replace(/[≤]/g, '<=').replace(/[≥]/g, '>=');
   let m = t.match(/^([\d.]+)\s*<\s*X\s*<=\s*([\d.]+)/i);
   if (m) return { gt: Number(m[1]), lte: Number(m[2]) };
@@ -114,7 +114,7 @@ function parseBand(raw: any): { gt: number; lte: number | null } | null {
  * so a parcel weighing exactly the bound still falls in the band the card put it in.
  * If the top band is closed, an open 面议 band is appended.
  */
-function normaliseBands(
+export function normaliseBands(
   rows: Array<{ band: { gt: number; lte: number | null }; price: Price }>,
   tierBasis: string,
   defaultUnit: string,
@@ -155,10 +155,10 @@ function normaliseBands(
   return out;
 }
 
-const round3 = (n: number) => Math.round(n * 1000) / 1000;
+export const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 /** Each sheet carries its own 报价生效期; the cover date is the fallback. */
-function sheetEffectiveDate(rows: any[][], fallback: string): string {
+export function sheetEffectiveDate(rows: any[][], fallback: string): string {
   for (const r of rows.slice(0, 6)) {
     for (const c of r) {
       const m = S(c).match(/生效期[:：]\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
@@ -168,7 +168,7 @@ function sheetEffectiveDate(rows: any[][], fallback: string): string {
   return fallback;
 }
 
-const grid = (wb: XLSX.WorkBook, name: string): any[][] =>
+export const grid = (wb: XLSX.WorkBook, name: string): any[][] =>
   XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, blankrows: false, defval: '' });
 
 // ─── sheet parsers ────────────────────────────────────────────────────
@@ -511,7 +511,11 @@ async function main() {
   process.exit(activated === parsed.length && !failed ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error('IMPORT ERROR:', e?.message ?? e);
-  process.exit(1);
-});
+// Guarded so the shipping importer can reuse the helpers above without this
+// script's main() firing on import.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('IMPORT ERROR:', e?.message ?? e);
+    process.exit(1);
+  });
+}

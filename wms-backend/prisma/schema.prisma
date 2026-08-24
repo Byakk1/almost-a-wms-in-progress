@@ -705,8 +705,11 @@ model RateCardItem {
   zone     String? // SHIPPING only; joins ShippingZone.zone
 
   tierBasis  String   @default("NONE") // NONE | WEIGHT_KG | STORAGE_DAYS | VOLUME_CBM | QUANTITY
-  rangeStart Decimal? @db.Decimal(12, 3) // inclusive; null = 0
-  rangeEnd   Decimal? @db.Decimal(12, 3) // exclusive; null = ∞
+  // 6dp, not 3: the Purolator sheet prices in POUNDS and states its kg bands as
+  // converted values (0.454545454545 = 1 lb). At 3dp the boundary lands ~1 g from
+  // where the carrier put it and that window bills one band cheap.
+  rangeStart Decimal? @db.Decimal(12, 6) // inclusive; null = 0
+  rangeEnd   Decimal? @db.Decimal(12, 6) // exclusive; null = ∞
 
   chargeUnit     String // PER_CBM_DAY | PER_CBM | PER_KG | PER_PALLET | PER_CARTON | PER_CONTAINER | PER_ORDER | PER_ITEM | PER_LABEL
   unitPrice      Decimal? @db.Decimal(12, 4) // null only when quoteOnRequest

@@ -94,6 +94,21 @@ export class RateCardsController {
     return ok(r.data, r.pagination);
   }
 
+  // Items are paged for the same reason zones are: a shipping card carries one
+  // row per (zone × weight band), which runs to several thousand.
+  @Roles('SUPER_ADMIN', 'FINANCE', 'CUSTOMER_SERVICE', 'WAREHOUSE_ADMIN')
+  @Get(':id/items')
+  async listItems(
+    @Param('id') id: string,
+    @Query('page') page?: number,
+    @Query('pageSize') pageSize?: number,
+    @Query('zone') zone?: string,
+    @Query('itemCode') itemCode?: string,
+  ) {
+    const r = await this.svc.listItems(id, { page, pageSize, zone, itemCode });
+    return ok(r.data, r.pagination);
+  }
+
   @Roles('SUPER_ADMIN', 'FINANCE')
   @Post(':id/items')
   async addItems(@Param('id') id: string, @Body() body: AddRateCardItemsDto) {

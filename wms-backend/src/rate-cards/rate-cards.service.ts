@@ -10,6 +10,9 @@ import {
 
 const ENTITY = 'RateCard';
 
+/** Most items findOne will inline before the caller must page via listItems(). */
+const ITEM_PREVIEW_CAP = 200;
+
 /** rangeStart/rangeEnd are nullable Decimals meaning 0 and +∞ respectively. */
 const lo = (v: any): number => (v === null || v === undefined ? 0 : Number(v));
 const hi = (v: any): number => (v === null || v === undefined ? Infinity : Number(v));
@@ -67,17 +70,23 @@ export class RateCardsService {
     const card = await this.prisma.rateCard.findUnique({
       where: { id },
       include: {
-        items: { orderBy: [{ itemCode: 'asc' }, { zone: 'asc' }, { rangeStart: 'asc' }] },
+        // Items are CAPPED, not unbounded: a shipping card carries one row per
+        // (zone × weight band) and runs to several thousand. Returning them all
+        // inline would make the detail endpoint unusable. Use listItems() to page.
+        items: {
+          orderBy: [{ itemCode: 'asc' }, { zone: 'asc' }, { rangeStart: 'asc' }],
+          take: ITEM_PREVIEW_CAP,
+        },
         customers: { include: { customer: { select: { code: true, name: true } } } },
-        // A SHIPPING card can hold thousands of zone rows; the count is on the list
-        // endpoint and the rows are paged separately by listZones().
-        _count: { select: { zones: true } },
+        _count: { select: { zones: true, items: true } },
       },
     });
     if (!card) throw new NotFoundException('价卡不存在');
     return {
       ...card,
       zoneCount: card._count.zones,
+      itemCount: card._count.items,
+      itemsTruncated: card._count.items > card.items.length,
       _count: undefined,
       customers: card.customers.map((c) => ({
         customerId: c.customerId,
@@ -87,6 +96,27 @@ export class RateCardsService {
         discountRatio: Number(c.discountRatio),
       })),
     };
+  }
+
+  async listItems(
+    id: string,
+    q: { page?: number; pageSize?: number; zone?: string; itemCode?: string },
+  ) {
+    const page = Number(q.page) || 1;
+    const pageSize = Math.min(Number(q.pageSize) || 50, 500);
+    const where: any = { rateCardId: id };
+    if (q.zone) where.zone = q.zone;
+    if (q.itemCode) where.itemCode = q.itemCode;
+
+    const [data, total] = await Promise.all([
+      this.prisma.rateCardItem.findMany({
+        where,
+        orderBy: [{ itemCode: 'asc' }, { zone: 'asc' }, { rangeStart: 'asc' }],
+        skip: (page - 1) * pageSize, take: pageSize,
+      }),
+      this.prisma.rateCardItem.count({ where }),
+    ]);
+    return { data, pagination: { page, pageSize, total } };
   }
 
   async listZones(id: string, q: { page?: number; pageSize?: number; zone?: string; origin?: string }) {
@@ -149,10 +179,14 @@ export class RateCardsService {
   async addItems(id: string, dto: AddRateCardItemsDto) {
     const card = await this.mustBeDraft(id, '追加价卡明细');
     dto.items.forEach(assertPriceIsKnown);
-    await this.prisma.rateCardItem.createMany({
+    const res = await this.prisma.rateCardItem.createMany({
       data: dto.items.map((i) => itemRow(card.id, i)),
     });
-    return this.findOne(card.id);
+    // Returns a summary rather than the whole card: a shipping card is built in
+    // chunks of a thousand, and re-serialising thousands of items after every
+    // chunk would dominate the import.
+    const total = await this.prisma.rateCardItem.count({ where: { rateCardId: card.id } });
+    return { rateCardId: card.id, inserted: res.count, total };
   }
 
   async addZones(id: string, dto: AddShippingZonesDto) {
