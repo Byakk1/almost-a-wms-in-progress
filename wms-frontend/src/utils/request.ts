@@ -14,16 +14,20 @@ request.interceptors.request.use(
     // AuthRoute also trusts. Reading a separate localStorage 'token' key used to
     // desync from the store and surface as spurious 401s.
     const token = useAuthStore.getState().token;
-    const warehouseId = localStorage.getItem('warehouseId');
 
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
 
-    // Add X-Warehouse-Id as specified in PRD API contracts
-    if (warehouseId) {
-      config.headers['X-Warehouse-Id'] = warehouseId;
-    }
+    // X-Warehouse-Id used to be sent here "as specified in PRD API contracts".
+    // It was removed: no backend handler ever read it, so it was a phantom
+    // contract that looked like working multi-warehouse scoping and was not.
+    //
+    // It is deliberately NOT being implemented instead. Warehouse scope already
+    // travels inside the JWT (see AuthService.signAccessToken), which the server
+    // signs and can trust. Routing on a client-supplied header would let any
+    // caller claim any warehouse simply by editing it — replacing a harmless
+    // no-op with a real authorisation hole.
 
     return config;
   },

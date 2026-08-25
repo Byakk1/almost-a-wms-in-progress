@@ -232,6 +232,7 @@ export class RateCardsService {
     }
 
     assertTiersAreSound(card.items);
+    await this.assertDefaultNamespaceIsClear(card);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.rateCard.update({ where: { id }, data: { status: 'ACTIVE' } });
@@ -410,6 +411,13 @@ export class RateCardsService {
 
     let zoneMiss: string | null = null;
     const triedCards: string[] = [];
+    // Every candidate that actually carries the requested item. Collected rather
+    // than returned-on-first-hit so an ambiguous DEFAULT lookup can be refused
+    // instead of silently resolved — see below.
+    const matches: Array<{
+      card: any; source: 'CUSTOMER' | 'DEFAULT'; discountRatio: number;
+      zone: string | null; items: any[];
+    }> = [];
 
     for (const { card, source, discountRatio } of candidates) {
       // SHIPPING: postcode → zone is the first of two lookups.
@@ -437,7 +445,37 @@ export class RateCardsService {
         continue;
       }
 
-      return this.priceFrom(card, source, zone, items, dto, discountRatio);
+      matches.push({ card, source, discountRatio, zone, items });
+
+      // A customer assignment carries an explicit priority, which IS the operator's
+      // chosen tiebreak — so the first customer match is the answer, no ambiguity.
+      if (source === 'CUSTOMER') break;
+    }
+
+    if (matches.length) {
+      const winner = matches[0];
+
+      // Several DEFAULT cards of the same type legitimately coexist — they are
+      // different SERVICE LINES (一件代发 vs FBA转运), each the list price for its
+      // own line, and their itemCode namespaces are disjoint. What is NOT
+      // legitimate is answering an unqualified lookup by picking whichever happens
+      // to sort first: default cards carry no priority, so "first" means "latest
+      // effectiveAt", which is a date, not a business decision. Refuse instead.
+      if (winner.source === 'DEFAULT' && !dto.itemCode) {
+        const rivals = matches.filter((m) => m.source === 'DEFAULT');
+        if (rivals.length > 1) {
+          throw new BadRequestException(
+            `询价条件不足：${rivals.length} 张默认价卡都能匹配` +
+            `（${rivals.map((r) => r.card.name).join(' / ')}）。` +
+            `它们分属不同业务线，请用 itemCode 指定，例如 ` +
+            `${rivals.map((r) => r.items[0]?.itemCode).filter(Boolean).join(' 或 ') || '对应的计费编码'}`,
+          );
+        }
+      }
+
+      return this.priceFrom(
+        winner.card, winner.source, winner.zone, winner.items, dto, winner.discountRatio,
+      );
     }
 
     if (zoneMiss) throw new NotFoundException(zoneMiss);
@@ -548,8 +586,53 @@ export class RateCardsService {
 
   // ─── helpers ────────────────────────────────────────────────────────
 
-  private async mustBeDraft(id: string, action: string) {
-    const card = await this.prisma.rateCard.findUnique({ where: { id } });
+  /**
+   * Several DEFAULT cards of the same type are legitimate — they are separate
+   * SERVICE LINES (一件代发 vs FBA转运), each the published list price for its own
+   * line. What must never happen is two of them claiming the SAME itemCode: a
+   * default card carries no priority, so there would be no principled way to pick
+   * between them and quote() would answer by sort order, i.e. by effectiveAt.
+   *
+   * Enforced here rather than in the database because the rule is "these two
+   * cards' itemCode SETS must be disjoint", which no unique index can express.
+   */
+  private async assertDefaultNamespaceIsClear(card: {
+    id: string; name: string; type: string; carrier: string | null; isDefault: boolean;
+  }) {
+    if (!card.isDefault) return;
+
+    const mine = (
+      await this.prisma.rateCardItem.findMany({
+        where: { rateCardId: card.id, itemCode: { not: null } },
+        select: { itemCode: true }, distinct: ['itemCode'],
+      })
+    ).map((i) => i.itemCode!);
+    if (!mine.length) return;
+
+    const clash = await this.prisma.rateCardItem.findFirst({
+      where: {
+        itemCode: { in: mine },
+        rateCard: {
+          id: { not: card.id },
+          isDefault: true,
+          status: 'ACTIVE',
+          type: card.type,
+          carrier: card.carrier,
+        },
+      },
+      include: { rateCard: { select: { name: true } } },
+    });
+
+    if (clash) {
+      throw new BadRequestException(
+        `计费编码 ${clash.itemCode} 已被另一张生效中的默认价卡「${clash.rateCard.name}」占用。` +
+        `同类型的多张默认价卡代表不同业务线，其计费编码必须互不重叠——` +
+        `否则询价时无从判断该用哪一张。请改用不同的编码，或先归档那张价卡。`,
+      );
+    }
+  }
+
+  private async mustBeDraft(id: string, action: string) {    const card = await this.prisma.rateCard.findUnique({ where: { id } });
     if (!card) throw new NotFoundException('价卡不存在');
     if (card.status !== 'DRAFT') {
       throw new BadRequestException(

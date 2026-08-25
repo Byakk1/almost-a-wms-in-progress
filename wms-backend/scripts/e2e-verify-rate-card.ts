@@ -476,6 +476,62 @@ async function main() {
   push('discount: applies per assignment, not to every card the customer holds',
     sibUndiscounted.discountRatio === 1 && sibUndiscounted.unitPrice === 7);
 
+  // ═══ Ambiguous default resolution ══════════════════════════════════
+  // Several DEFAULT cards of one type are legitimate — separate service lines,
+  // each the list price for its own. The bug is answering an UNQUALIFIED lookup by
+  // sort order: defaults carry no priority, so "first" means "latest effectiveAt",
+  // which is a date, not a business decision.
+
+  const lineA = await svc.create({
+    name: `${TAG} line-A`, type: 'FULFILLMENT', effectiveAt: past, isDefault: true,
+    items: [{ ...kg(0, undefined, 7), itemCode: 'E2E_LINE_A' }],
+  });
+  await svc.activate(lineA.id);
+
+  const lineB = await svc.create({
+    name: `${TAG} line-B`, type: 'FULFILLMENT', effectiveAt: past, isDefault: true,
+    items: [{ ...kg(0, undefined, 11), itemCode: 'E2E_LINE_B' }],
+  });
+  await svc.activate(lineB.id);
+
+  push('default: two service lines may BOTH be default when codes are disjoint',
+    (await svc.findOne(lineB.id)).status === 'ACTIVE');
+
+  const eAmbig = await expectErr(() => svc.quote({ type: 'FULFILLMENT', value: 1 }));
+  push('default: an unqualified lookup matching 2 defaults is REFUSED, not guessed',
+    has(eAmbig, '询价条件不足'));
+  push('default: the refusal names the rival cards and the codes to use',
+    has(eAmbig, 'line-A') && has(eAmbig, 'line-B') && has(eAmbig, 'E2E_LINE_A'));
+
+  push('default: qualifying with itemCode resolves it cleanly',
+    (await svc.quote({ type: 'FULFILLMENT', itemCode: 'E2E_LINE_B', value: 1 })).unitPrice === 11);
+
+  // A customer assignment carries an explicit priority — that IS the operator's
+  // chosen tiebreak, so a customer lookup is never ambiguous.
+  await svc.assign({ customerId: cust.id, rateCardId: lineA.id, priority: 77 });
+  const custWins = await svc.quote({ customerId: cust.id, type: 'FULFILLMENT', value: 1 });
+  push('default: a CUSTOMER assignment is never ambiguous (priority is the tiebreak)',
+    custWins.source === 'CUSTOMER' && custWins.unitPrice === 7);
+
+  // ─── The namespace invariant is enforced at activation ──────────────
+  const clash = await svc.create({
+    name: `${TAG} line-clash`, type: 'FULFILLMENT', effectiveAt: past, isDefault: true,
+    items: [{ ...kg(0, undefined, 13), itemCode: 'E2E_LINE_A' }], // already taken
+  });
+  const eClash = await expectErr(() => svc.activate(clash.id));
+  push('default: a second default card reusing an itemCode cannot activate',
+    has(eClash, '已被另一张生效中的默认价卡'));
+
+  // Non-default cards are free to reuse codes — they are only reachable by an
+  // explicit customer assignment, which disambiguates by construction.
+  const reuse = await svc.create({
+    name: `${TAG} line-reuse`, type: 'FULFILLMENT', effectiveAt: past, isDefault: false,
+    items: [{ ...kg(0, undefined, 13), itemCode: 'E2E_LINE_A' }],
+  });
+  await svc.activate(reuse.id);
+  push('default: a NON-default card may reuse the code (reachable only by assignment)',
+    (await svc.findOne(reuse.id)).status === 'ACTIVE');
+
   // ═══ Audit ═════════════════════════════════════════════════════════
 
   const logs = await prisma.operationLog.findMany({
