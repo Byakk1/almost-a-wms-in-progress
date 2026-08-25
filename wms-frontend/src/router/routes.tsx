@@ -54,6 +54,7 @@ import ExceptionCenter from '../pages/Exception';
 import AuditLog from '../pages/Settings/AuditLog';
 import InventoryFlow from '../pages/Warehouse/InventoryFlow';
 import DictionaryManage from '../pages/Settings/Dictionary';
+import RateCardManage from '../pages/Settings/RateCard';
 
 export interface RouteConfig {
   path: string;
@@ -102,6 +103,7 @@ export const routeElements: Record<string, React.ReactNode> = {
   '/settings/basic': <SystemSettings />,
   '/settings/audit-log': <AuditLog />,
   '/settings/dictionary': <DictionaryManage />,
+  '/settings/rate-cards': <RateCardManage />,
   '/exception/center': <ExceptionCenter />,
   '/warehouse/inventory/transactions': <InventoryFlow />,
 };
@@ -251,6 +253,7 @@ export const menuRoutes: RouteConfig[] = [
           { path: '/settings/basic', name: '基础配置' },
           { path: '/settings/audit-log', name: '操作日志' },
           { path: '/settings/dictionary', name: '数据字典' },
+          { path: '/settings/rate-cards', name: '价卡管理' },
         ],
       },
     ],

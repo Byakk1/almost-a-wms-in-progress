@@ -31,8 +31,8 @@
 # re-included before its contents can be.
 !wms-backend/src/rate-cards/
 !wms-backend/src/rate-cards/**
-!wms-frontend/src/pages/RateCard/
-!wms-frontend/src/pages/RateCard/**
+!wms-frontend/src/pages/Settings/RateCard/
+!wms-frontend/src/pages/Settings/RateCard/**
 
 # Re-assert the DATA rules after those negations (last matching pattern wins), so
 # re-including the module directories cannot become a hole to smuggle a price dump

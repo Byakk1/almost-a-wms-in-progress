@@ -76,6 +76,10 @@ export const routePermissions: Record<string, Role[]> = {
   '/settings/basic': ADMIN,
   '/settings/audit-log': ADMIN, // audit operations
   '/settings/dictionary': ADMIN, // dictionary.controller
+  // rate-cards.controller GET roles. FINANCE is included (they own pricing) and
+  // OPERATOR is not — a warehouse operator has no reason to read the full
+  // commercial price list.
+  '/settings/rate-cards': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'FINANCE', 'CUSTOMER_SERVICE'],
 };
 
 // Capability key → roles (mirrors the stricter backend WRITE endpoints).
@@ -98,6 +102,9 @@ export const actionPermissions: Record<string, Role[]> = {
   'receiving.receive': OPS, // receiving-orders/:id/check|receive|complete
   'customer.write': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'CUSTOMER_SERVICE'],
   'customer.transaction': ['SUPER_ADMIN', 'FINANCE'], // customer-transactions POST
+  // rate-cards create / activate / archive / assign — deliberately tighter than
+  // the OPS_CS used elsewhere, because this is commercial pricing.
+  'rateCard.write': ['SUPER_ADMIN', 'FINANCE'],
 };
 
 export function hasRole(allowed: Role[] | undefined, role: string | null | undefined): boolean {
