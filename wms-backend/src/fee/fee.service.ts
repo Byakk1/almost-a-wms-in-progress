@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RateCardsService } from '../rate-cards/rate-cards.service';
+import { CalculateFeeDto } from './dto/calculate-fee.dto';
 
 /**
  * Shipping fee estimation.
@@ -30,26 +31,11 @@ const VOLUMETRIC_DIVISOR = 5000;
 // (PER_ORDER, PER_ITEM …) is a flat figure for the whole band.
 const WEIGHT_SCALED = new Set(['PER_KG']);
 
-export interface CalculateFeeBody {
-  customerId: string;
-  warehouseId: string;
-  items: Array<{ productId: string; qty: number }>;
-  shippingMode: 'AIR' | 'SEA' | 'EXPRESS';
-  destinationCountry?: string;
-  /** Postcode — required to reach a real SHIPPING card (postcode → zone → band). */
-  destination?: string;
-  /** Carrier name as it appears on the rate card header. */
-  carrier?: string;
-  /**
-   * Shipping warehouse, as labelled in the carrier's zone table (e.g. 多伦多).
-   * NOT derived from `warehouseId`: the zone tables key on the carrier's own
-   * origin labels, and no mapping from our Warehouse rows to those labels exists
-   * yet. Passing it explicitly beats guessing one.
-   */
-  origin?: string;
-  /** Quote as-of; lets a bill reprint at the prices that were live when issued. */
-  at?: string;
-}
+// The request shape lives in CalculateFeeDto, where class-validator can enforce
+// it. `origin` is deliberately NOT derived from warehouseId: the zone tables key
+// on each carrier's own origin labels (多伦多 / 温哥华) and no mapping from our
+// Warehouse rows to those labels exists yet, so it is passed explicitly.
+export type CalculateFeeBody = CalculateFeeDto;
 
 @Injectable()
 export class FeeService {
@@ -59,25 +45,18 @@ export class FeeService {
   ) {}
 
   async calculateFee(body: CalculateFeeBody) {
-    let totalWeight = 0;
-    let totalVolume = 0;
-
-    for (const item of body.items) {
-      const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
-      if (!product) throw new NotFoundException(`Product ${item.productId} not found`);
-
-      totalWeight += Number(product.weight || 0) * item.qty;
-      const volume =
-        Number(product.length || 0) * Number(product.width || 0) * Number(product.height || 0);
-      totalVolume += volume * item.qty;
-    }
+    const { totalWeight, totalVolume } = await this.measure(body);
 
     const chargeableWeight = Math.max(totalWeight, totalVolume / VOLUMETRIC_DIVISOR);
     const base = {
-      shippingMode: body.shippingMode,
-      totalWeight,
-      totalVolume,
+      shippingMode: body.shippingMode ?? 'EXPRESS',
+      totalWeight: round2(totalWeight),
+      totalVolume: round2(totalVolume),
+      volumetricWeight: round2(totalVolume / VOLUMETRIC_DIVISOR),
       chargeableWeight: round2(chargeableWeight),
+      // Which of the two won — the single most-asked question about any freight
+      // quote, and the page should not have to re-derive it.
+      chargeableBasis: totalVolume / VOLUMETRIC_DIVISOR > totalWeight ? 'VOLUMETRIC' : 'ACTUAL',
     };
 
     if (!body.destination) {
@@ -135,12 +114,55 @@ export class FeeService {
     }
   }
 
+  /**
+   * Weight and volume, from SKUs when given and from typed-in measurements
+   * otherwise. The calculator is used before an order exists at least as often as
+   * after one, so requiring productIds would make it unusable for its main job.
+   */
+  private async measure(body: CalculateFeeBody) {
+    if (body.items?.length) {
+      let totalWeight = 0;
+      let totalVolume = 0;
+      for (const item of body.items) {
+        const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
+        if (!product) throw new NotFoundException(`Product ${item.productId} not found`);
+        totalWeight += Number(product.weight || 0) * item.qty;
+        const volume =
+          Number(product.length || 0) * Number(product.width || 0) * Number(product.height || 0);
+        totalVolume += volume * item.qty;
+      }
+      return { totalWeight, totalVolume };
+    }
+
+    if (body.actualWeightKg === undefined || body.actualWeightKg === null) {
+      throw new BadRequestException(
+        '请提供商品明细（items）或直接填写实重（actualWeightKg）',
+      );
+    }
+
+    const pieces = body.pieces ?? 1;
+    const dims = [body.length, body.width, body.height];
+    // Partial dimensions are a data-entry slip, not a zero-volume parcel: silently
+    // treating L×W with no H as 0 would quote a volumetric weight of 0 and could
+    // under-bill a large light carton.
+    const given = dims.filter((d) => d !== undefined && d !== null).length;
+    if (given > 0 && given < 3) {
+      throw new BadRequestException('体积尺寸需三边齐全（length / width / height），或全部留空');
+    }
+
+    const oneVolume = given === 3 ? Number(body.length) * Number(body.width) * Number(body.height) : 0;
+    return {
+      totalWeight: Number(body.actualWeightKg) * pieces,
+      totalVolume: oneVolume * pieces,
+    };
+  }
+
   private fallback(
-    base: { shippingMode: string; totalWeight: number; totalVolume: number; chargeableWeight: number },
+    base: Record<string, unknown>,
     chargeableWeight: number,
     reason?: string,
   ) {
-    const rate = FALLBACK_RATES[base.shippingMode] ?? DEFAULT_FALLBACK_RATE;
+    const rate = FALLBACK_RATES[String(base.shippingMode)] ?? DEFAULT_FALLBACK_RATE;
     return {
       ...base,
       estimatedFee: round2(chargeableWeight * rate),

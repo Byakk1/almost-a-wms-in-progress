@@ -540,6 +540,42 @@ async function main() {
   push('fee: the response still shows the undiscounted list rate for audit',
     feeDisc.rateCard?.listUnitPrice === 19 && feeDisc.rateCard?.discountRatio === 0.8);
 
+  // ─── Direct measurements: the calculator's main job needs no SKUs ─────
+  const feeDirect: any = await fee.calculateFee({
+    customerId: cust.id, destination: 'V6B 1A1', carrier: 'E2E-EXPRESS',
+    actualWeightKg: 2, pieces: 1,
+  });
+  push('fee: quotes from a typed-in weight with no items[] at all',
+    feeDirect.source === 'RATE_CARD' && feeDirect.chargeableWeight === 2);
+
+  const feeVol: any = await fee.calculateFee({
+    customerId: cust.id, destination: 'V6B 1A1', carrier: 'E2E-EXPRESS',
+    actualWeightKg: 1, length: 40, width: 40, height: 40, pieces: 1,
+  });
+  push('fee: volumetric wins when it is heavier (40³/5000 = 12.8 kg)',
+    feeVol.chargeableWeight === 12.8 && feeVol.chargeableBasis === 'VOLUMETRIC');
+  push('fee: reports WHICH basis won, so the page need not re-derive it',
+    feeDirect.chargeableBasis === 'ACTUAL');
+
+  const ePartialDims = await expectErr(() => fee.calculateFee({
+    customerId: cust.id, destination: 'V6B 1A1', carrier: 'E2E-EXPRESS',
+    actualWeightKg: 1, length: 40, width: 40,
+  }));
+  push('fee: partial dimensions are rejected, not silently treated as zero volume',
+    has(ePartialDims, '三边齐全'));
+
+  const eNoMeasure = await expectErr(() => fee.calculateFee({
+    customerId: cust.id, destination: 'V6B 1A1', carrier: 'E2E-EXPRESS',
+  }));
+  push('fee: with neither items nor a weight, the error names BOTH routes',
+    has(eNoMeasure, 'items') && has(eNoMeasure, 'actualWeightKg'));
+
+  const feePieces: any = await fee.calculateFee({
+    customerId: cust.id, destination: 'V6B 1A1', carrier: 'E2E-EXPRESS',
+    actualWeightKg: 2, pieces: 3,
+  });
+  push('fee: pieces multiply the parcel weight (2 × 3)', feePieces.chargeableWeight === 6);
+
   // ═══ Report ════════════════════════════════════════════════════════
 
   console.log('=== sample ===');
