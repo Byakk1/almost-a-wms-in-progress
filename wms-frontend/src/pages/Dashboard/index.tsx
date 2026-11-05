@@ -1,254 +1,179 @@
-import React, { useEffect, useState } from 'react';
-import { Row, Col, Card, Statistic, List, Typography, Space, Tag, Spin, Button } from 'antd';
-import { PageContainer } from '@ant-design/pro-components';
+import React from 'react';
+import { Alert, Button, Empty, Skeleton, Tooltip, theme } from 'antd';
 import {
-  ArrowUpOutlined,
-  ArrowDownOutlined,
-  InboxOutlined,
-  UploadOutlined,
-  RocketOutlined,
-  WarningOutlined,
-  ClockCircleOutlined,
+  ArrowRightOutlined, InboxOutlined, UploadOutlined, RocketOutlined,
+  WarningOutlined, ClockCircleOutlined, ReloadOutlined, ScanOutlined,
+  DatabaseOutlined, CalculatorOutlined, InfoCircleOutlined,
 } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
-import request from '../../utils/request';
+import { canAccessPath, useRole } from '../../router/permissions';
+import { useDashboardResource } from './useDashboardResource';
 
-const { Text } = Typography;
+interface Stats {
+  todayInbound: number;
+  todayOutbound: number;
+  pendingOrders: number;
+  pendingSignout: number;
+  totalSkus: number;
+  exceptionCount: number;
+}
+interface Trend { labels: string[]; inbound: number[]; outbound: number[] }
+interface Capacity { total: number; occupied: number; reserved: number; empty: number; utilizationRate: number }
+interface Todo { id: string; type: string; title: string; count: number }
 
-// Placeholder notices since backend doesn't have notices API yet
-const notices = [
-  { id: 1, title: '系统升级维护通知', date: '2026-02-28 10:00', type: 'system' },
-  { id: 2, title: '新增北美 FBA 线路报价', date: '2026-02-27 15:30', type: 'business' },
-  { id: 3, title: '关于规范易碎品打包的培训', date: '2026-02-26 09:15', type: 'training' },
-];
+const taskRoutes: Record<string, { path: string; icon: React.ReactNode; label: string }> = {
+  receiving: { path: '/inbound/receiving', icon: <UploadOutlined />, label: '收货管理' },
+  putaway: { path: '/inbound/putaway', icon: <InboxOutlined />, label: '上架管理' },
+  inventory: { path: '/warehouse/inventory', icon: <DatabaseOutlined />, label: '库存查询' },
+};
+
+function ResourceFeedback({ resource, label }: {
+  resource: { loading: boolean; error: boolean; data: unknown; reload: () => void };
+  label: string;
+}) {
+  if (resource.error) return (
+    <Alert
+      className="console-resource-error"
+      type="error"
+      showIcon
+      role="alert"
+      message={`${label} unavailable`}
+      description={resource.data ? 'Showing the last successful response. Retry to refresh.' : 'This is not a zero result. Please retry.'}
+      action={<Button size="small" onClick={resource.reload}>Retry</Button>}
+    />
+  );
+  if (resource.loading && !resource.data) return <Skeleton active paragraph={{ rows: 3 }} title={false} />;
+  return null;
+}
 
 const Dashboard: React.FC = () => {
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState<any>({});
-  const [trendData, setTrendData] = useState<any>({ labels: [], inbound: [], outbound: [] });
-  const [utilization, setUtilization] = useState<any>({ total: 100, occupied: 0, reserved: 0, empty: 100, utilizationRate: 0 });
-  const [todos, setTodos] = useState<any[]>([]);
+  const role = useRole();
+  const { token } = theme.useToken();
+  const stats = useDashboardResource<Stats>('/dashboard/stats');
+  const trend = useDashboardResource<Trend>('/dashboard/trend?days=7');
+  const capacity = useDashboardResource<Capacity>('/dashboard/warehouse-utilization');
+  const todos = useDashboardResource<Todo[]>('/dashboard/todos');
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        setLoading(true);
-        const [statsRes, trendRes, utilRes, todosRes] = await Promise.all([
-          request.get('/dashboard/stats'),
-          request.get('/dashboard/trend?days=7'),
-          request.get('/dashboard/warehouse-utilization'),
-          request.get('/dashboard/todos')
-        ]);
-        
-        setStats(statsRes?.data || statsRes || {});
-        setTrendData(trendRes?.data || trendRes || { labels: [], inbound: [], outbound: [] });
-        setUtilization(utilRes?.data || utilRes || { total: 100, occupied: 0, reserved: 0, empty: 100, utilizationRate: 0 });
-        setTodos(todosRes?.data || todosRes || []);
-      } catch (error) {
-        console.error('Failed to fetch dashboard data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDashboardData();
-  }, []);
-
-  const metricCards = [
-    { title: '今日入库量', value: stats.todayInbound || 0, suffix: '件', icon: <UploadOutlined />, color: '#3B82F6', trend: 'up', trendValue: 12 },
-    { title: '今日出库量', value: stats.todayOutbound || 0, suffix: '件', icon: <RocketOutlined />, color: '#F97316', trend: 'down', trendValue: 5 },
-    { title: '待处理任务', value: stats.pendingOrders || 0, icon: <ClockCircleOutlined />, color: '#F59E0B' },
-    { title: '已分配签出', value: stats.pendingSignout || 0, icon: <RocketOutlined />, color: '#D23148' },
-    { title: '在库 SKUs', value: stats.totalSkus || 0, icon: <InboxOutlined />, color: '#10B981' },
-    { title: '异常状况', value: stats.exceptionCount || 0, icon: <WarningOutlined />, color: '#EF4444' }
+  const metrics: Array<{ key: keyof Stats; title: string; unit?: string; icon: React.ReactNode; note: string }> = [
+    { key: 'todayInbound', title: '今日入库量', unit: '件', icon: <UploadOutlined />, note: 'Received units on orders created today' },
+    { key: 'todayOutbound', title: '今日出库量', unit: '件', icon: <RocketOutlined />, note: 'Packed units on orders created today' },
+    { key: 'pendingOrders', title: '待处理任务', unit: '单', icon: <ClockCircleOutlined />, note: 'Receiving orders not yet in a terminal state' },
+    { key: 'pendingSignout', title: '已分配签出', unit: '单', icon: <RocketOutlined />, note: 'Packed or shipped orders awaiting sign-out' },
+    { key: 'totalSkus', title: '在库 SKUs', icon: <InboxOutlined />, note: 'Distinct products with inventory records' },
+    { key: 'exceptionCount', title: '异常状况', unit: '单', icon: <WarningOutlined />, note: 'Inbound and outbound orders in exception state' },
   ];
+  const shortcuts = [
+    { path: '/inbound/receiving/add', label: '收货操作台', icon: <ScanOutlined /> },
+    { path: '/inbound/putaway', label: '上架管理', icon: <InboxOutlined /> },
+    { path: '/outbound/picking', label: '拣货管理', icon: <RocketOutlined /> },
+    { path: '/outbound/packing', label: '按单打包台', icon: <ScanOutlined /> },
+    { path: '/warehouse/inventory', label: '库存查询', icon: <DatabaseOutlined /> },
+    { path: '/fee/calculator', label: '运费试算', icon: <CalculatorOutlined /> },
+  ].filter((item) => canAccessPath(item.path, role));
 
-  // ECharts Option for Trend Line
   const trendOption = {
+    animation: false,
     tooltip: { trigger: 'axis' },
-    legend: { data: ['入库', '出库'], bottom: 0 },
-    grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
-    xAxis: { type: 'category', boundaryGap: false, data: trendData.labels },
-    yAxis: { type: 'value' },
+    legend: { data: ['入库', '出库'], top: 0, right: 0, textStyle: { color: token.colorTextSecondary } },
+    grid: { left: 12, right: 16, top: 42, bottom: 8, containLabel: true },
+    xAxis: { type: 'category', boundaryGap: false, data: trend.data?.labels ?? [], axisLine: { lineStyle: { color: token.colorBorderSecondary } }, axisTick: { show: false }, axisLabel: { color: token.colorTextSecondary } },
+    yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: token.colorBorderSecondary, type: 'dashed' } }, axisLabel: { color: token.colorTextSecondary } },
     series: [
-      {
-        name: '入库',
-        type: 'line',
-        smooth: true,
-        itemStyle: { color: '#3B82F6' },
-        areaStyle: { color: 'rgba(59, 130, 246, 0.1)' },
-        data: trendData.inbound
-      },
-      {
-        name: '出库',
-        type: 'line',
-        smooth: true,
-        itemStyle: { color: '#F97316' },
-        areaStyle: { color: 'rgba(249, 115, 22, 0.1)' },
-        data: trendData.outbound
-      }
-    ]
+      { name: '入库', type: 'line', symbol: 'circle', symbolSize: 5, itemStyle: { color: token.colorPrimary }, lineStyle: { width: 2 }, data: trend.data?.inbound ?? [] },
+      { name: '出库', type: 'line', symbol: 'rect', symbolSize: 5, itemStyle: { color: token.colorTextSecondary }, lineStyle: { width: 2, type: 'dashed' }, data: trend.data?.outbound ?? [] },
+    ],
   };
-
-  // ECharts Option for Utilization Donut
-  const utilizationOption = {
-    tooltip: { trigger: 'item' },
-    legend: { top: '5%', left: 'center' },
-    series: [
-      {
-        name: '库区使用状态',
-        type: 'pie',
-        radius: ['40%', '70%'],
-        avoidLabelOverlap: false,
-        itemStyle: {
-          borderRadius: 10,
-          borderColor: '#fff',
-          borderWidth: 2
-        },
-        label: { show: false, position: 'center' },
-        emphasis: {
-          label: { show: true, fontSize: 20, fontWeight: 'bold' }
-        },
-        labelLine: { show: false },
-        data: [
-          { value: utilization.occupied || 0, name: '已使用', itemStyle: { color: '#D23148' } },
-          { value: utilization.reserved || 0, name: '已保留', itemStyle: { color: '#F59E0B' } },
-          { value: utilization.empty || utilization.total || 1, name: '空闲', itemStyle: { color: '#E2E8F0' } },
-        ]
-      }
-    ]
-  };
+  const busy = stats.loading || trend.loading || capacity.loading || todos.loading;
+  const refresh = () => { stats.reload(); trend.reload(); capacity.reload(); todos.reload(); };
 
   return (
-    <PageContainer
-      header={{
-        title: '运行总览',
-        subTitle: 'Cherry WMS 深圳主仓实时看板',
-        extra: <Text className="text-gray-400">数据更新时间: 刚刚</Text>,
-      }}
-    >
-      <Spin spinning={loading} tip="加载中...">
-        <div className="space-y-4">
-          {/* Metrics Row */}
-          <Row gutter={[16, 16]}>
-            {metricCards.map((item, index) => (
-              <Col xs={24} sm={12} lg={8} xl={4} key={index}>
-                <Card size="small" className="shadow-sm border-gray-100">
-                  <Statistic
-                    title={
-                      <Space size={4} className="text-gray-500 text-xs">
-                        <span style={{ color: item.color }}>{item.icon}</span>
-                        {item.title}
-                      </Space>
-                    }
-                    value={item.value}
-                    valueStyle={{ color: '#1f2937', fontWeight: 600, fontSize: 24 }}
-                    suffix={<span className="text-xs text-gray-400 ml-1">{item.suffix}</span>}
-                  />
-                  {item.trend && (
-                    <div className="mt-1 text-[10px]">
-                      <span className={item.trend === 'up' ? 'text-red-500' : 'text-green-500'}>
-                        {item.trend === 'up' ? <ArrowUpOutlined /> : <ArrowDownOutlined />} {item.trendValue}%
-                      </span>
-                      <span className="text-gray-400 ml-1">较昨日</span>
-                    </div>
-                  )}
-                </Card>
-              </Col>
-            ))}
-          </Row>
-
-          {/* Charts Row */}
-          <Row gutter={[16, 16]}>
-            <Col xs={24} lg={16}>
-              <Card 
-                title={<span className="text-sm font-semibold">近七天出入库趋势</span>} 
-                size="small"
-                className="shadow-sm border-gray-100"
-              >
-                <ReactECharts option={trendOption} style={{ height: '300px', width: '100%' }} />
-              </Card>
-            </Col>
-            <Col xs={24} lg={8}>
-              <Card 
-                title={<span className="text-sm font-semibold">当前仓库利用率</span>} 
-                size="small"
-                className="shadow-sm border-gray-100"
-              >
-                <ReactECharts option={utilizationOption} style={{ height: '300px', width: '100%' }} />
-                <div className="text-center mt-2">
-                  <div className="text-2xl font-bold text-red-600">{utilization.utilizationRate || 0}%</div>
-                  <Text type="secondary" className="text-xs">总利用率健康</Text>
-                </div>
-              </Card>
-            </Col>
-          </Row>
-
-          {/* Bottom Row - Notices & Tasks */}
-          <Row gutter={[16, 16]}>
-            <Col xs={24} lg={12}>
-              <Card 
-                title={<span className="text-sm font-semibold">最新系统公告</span>} 
-                extra={<Button type="link" size="small">查看全部</Button>}
-                size="small"
-                className="shadow-sm border-gray-100"
-              >
-                <List
-                  size="small"
-                  itemLayout="horizontal"
-                  dataSource={todos.length ? todos : notices}
-                  renderItem={(item: any) => (
-                    <List.Item className="hover:bg-gray-50 transition-colors rounded px-2 cursor-pointer border-none py-2">
-                      <List.Item.Meta
-                        title={
-                          <Space size={4}>
-                            <Tag color={item.type === 'receiving' ? 'blue' : item.type === 'putaway' ? 'orange' : 'green'} className="m-0 text-[10px] leading-4">
-                              {item.type || 'system'}
-                            </Tag>
-                            <span className="text-gray-700 text-xs">{item.title}</span>
-                          </Space>
-                        }
-                      />
-                      <div className="text-[10px] text-gray-400">{item.count ? `Count: ${item.count}` : item.date}</div>
-                    </List.Item>
-                  )}
-                />
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
-              <Card 
-                title={<span className="text-sm font-semibold">快捷操作台</span>} 
-                size="small"
-                className="shadow-sm border-gray-100 h-full"
-              >
-                <div className="grid grid-cols-3 gap-3 h-full pb-2">
-                  <div className="flex flex-col items-center justify-center p-3 border border-gray-100 rounded-lg cursor-pointer hover:border-red-500 hover:shadow-sm transition-all group bg-white">
-                    <div className="w-10 h-10 rounded-full bg-red-50 text-red-500 flex items-center justify-center text-lg mb-2 group-hover:bg-red-500 group-hover:text-white transition-colors">
-                      <UploadOutlined />
-                    </div>
-                    <span className="text-gray-700 text-xs font-medium">快速收货</span>
-                  </div>
-                  
-                  <div className="flex flex-col items-center justify-center p-3 border border-gray-100 rounded-lg cursor-pointer hover:border-orange-500 hover:shadow-sm transition-all group bg-white">
-                    <div className="w-10 h-10 rounded-full bg-orange-50 text-orange-500 flex items-center justify-center text-lg mb-2 group-hover:bg-orange-500 group-hover:text-white transition-colors">
-                      <RocketOutlined />
-                    </div>
-                    <span className="text-gray-700 text-xs font-medium">按单打包</span>
-                  </div>
-
-                  <div className="flex flex-col items-center justify-center p-3 border border-gray-100 rounded-lg cursor-pointer hover:border-blue-500 hover:shadow-sm transition-all group bg-white">
-                    <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-500 flex items-center justify-center text-lg mb-2 group-hover:bg-blue-500 group-hover:text-white transition-colors">
-                      <InboxOutlined />
-                    </div>
-                    <span className="text-gray-700 text-xs font-medium">库存盘点</span>
-                  </div>
-                </div>
-              </Card>
-            </Col>
-          </Row>
+    <div className="console-dashboard">
+      <header className="console-page-heading">
+        <div>
+          <p className="eyebrow">WAREHOUSE OPERATIONS</p>
+          <h1>运行总览</h1>
+          <p className="console-caption">出入库吞吐、待办任务与库位容量</p>
         </div>
-      </Spin>
-    </PageContainer>
+        <div className="console-heading-actions">
+          {stats.updatedAt && <span className="console-caption">Metrics updated <time dateTime={stats.updatedAt.toISOString()}>{stats.updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></span>}
+          <Button icon={<ReloadOutlined />} onClick={refresh} loading={busy}>Refresh</Button>
+        </div>
+      </header>
+
+      <section aria-label="关键指标" data-widget="stats" aria-busy={stats.loading}>
+        {stats.error && <ResourceFeedback resource={stats} label="Metrics" />}
+        <div className="console-metrics">
+          {metrics.map((metric) => (
+            <div key={metric.key} className={`console-metric${metric.key === 'exceptionCount' && (stats.data?.exceptionCount ?? 0) > 0 ? ' console-metric-alert' : ''}`}>
+              <div className="console-metric-label"><span>{metric.icon} {metric.title}</span><Tooltip title={metric.note}><InfoCircleOutlined tabIndex={0} aria-label={metric.note} /></Tooltip></div>
+              <div className="console-metric-value num">
+                {stats.loading && !stats.data ? <Skeleton.Input active size="small" style={{ width: 72 }} /> : stats.data?.[metric.key] ?? '—'}
+                {stats.data && metric.unit && <span className="console-metric-unit">{metric.unit}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="console-overview-grid">
+        <section className="console-panel console-work-queue" data-widget="todos" aria-busy={todos.loading}>
+          <div className="console-panel-heading"><div><p className="eyebrow">WORK QUEUE</p><h2>待办任务</h2></div><ClockCircleOutlined className="console-muted-icon" /></div>
+          <ResourceFeedback resource={todos} label="Work queue" />
+          {todos.data && (todos.data.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No pending tasks returned" /> : (
+            <ul className="console-task-list">
+              {todos.data.map((todo) => {
+                const target = taskRoutes[todo.type];
+                const allowed = target && canAccessPath(target.path, role);
+                return (
+                  <li key={todo.id} className="console-task-row">
+                    <span className="console-task-icon">{target?.icon ?? <ClockCircleOutlined />}</span>
+                    <div className="console-task-name"><strong>{todo.title}</strong><span className="console-caption">{target?.label ?? todo.type}</span></div>
+                    <span className="console-task-count num">{todo.count}</span>
+                    {allowed ? <Link to={target.path} className="console-task-open" aria-label={`Open ${todo.title}`}><ArrowRightOutlined /></Link> : <span className="console-task-open-placeholder" />}
+                  </li>
+                );
+              })}
+            </ul>
+          ))}
+          <p className="console-panel-note">Counts are grouped by task type. Open a queue to review its records.</p>
+        </section>
+
+        <section className="console-panel" data-widget="capacity" aria-busy={capacity.loading}>
+          <div className="console-panel-heading"><div><p className="eyebrow">CAPACITY</p><h2>库区状态</h2></div><DatabaseOutlined className="console-muted-icon" /></div>
+          <ResourceFeedback resource={capacity} label="Warehouse capacity" />
+          {capacity.data && (capacity.data.total === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No active locations" /> : (
+            <>
+              <div className="console-capacity-summary"><div><span className="console-capacity-value num">{capacity.data.utilizationRate}<small>%</small></span><p className="console-caption">已使用 + 已保留</p></div><span className="console-caption">Total <b className="num">{capacity.data.total}</b></span></div>
+              <div className="console-capacity-bar" role="img" aria-label={`Occupied ${capacity.data.occupied}, reserved ${capacity.data.reserved}, empty ${capacity.data.empty}`}>
+                <span className="console-capacity-occupied" style={{ width: `${capacity.data.occupied / capacity.data.total * 100}%` }} />
+                <span className="console-capacity-reserved" style={{ width: `${capacity.data.reserved / capacity.data.total * 100}%` }} />
+              </div>
+              <dl className="console-capacity-legend">
+                {[['已使用', capacity.data.occupied, 'occupied'], ['已保留', capacity.data.reserved, 'reserved'], ['空闲', capacity.data.empty, 'empty']].map(([label, value, kind]) => (
+                  <div key={kind}><dt><i className={`console-capacity-${kind}`} />{label}</dt><dd className="num">{value}</dd></div>
+                ))}
+              </dl>
+            </>
+          ))}
+        </section>
+
+        <section className="console-panel console-trend" data-widget="trend" aria-busy={trend.loading}>
+          <div className="console-panel-heading"><div><p className="eyebrow">THROUGHPUT</p><h2>近七天出入库趋势</h2></div><span className="console-caption">件 / day</span></div>
+          <ResourceFeedback resource={trend} label="Throughput" />
+          {trend.data && (trend.data.labels.length ? <ReactECharts option={trendOption} style={{ height: 240, width: '100%' }} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No throughput data returned" />)}
+          <p className="console-panel-note"><InfoCircleOutlined /> Received / packed units grouped by order creation date; not completion timestamps.</p>
+        </section>
+
+        <section className="console-panel" aria-label="快捷操作">
+          <div className="console-panel-heading"><div><p className="eyebrow">WORKSTATIONS</p><h2>快捷操作</h2></div><ScanOutlined className="console-muted-icon" /></div>
+          <nav className="console-shortcuts" aria-label="Workstation shortcuts">
+            {shortcuts.map((item) => <Link key={item.path} to={item.path}><span>{item.icon} {item.label}</span><ArrowRightOutlined /></Link>)}
+          </nav>
+          <p className="console-panel-note">Shortcuts supplement the existing navigation. All submenus remain available.</p>
+        </section>
+      </div>
+    </div>
   );
 };
 

@@ -50,19 +50,39 @@ const AppLayout: React.FC = () => {
   };
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className="console-shell" style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <ProLayout
-        title="Cherry WMS"
+        // `title={false}`: ProLayout renders its title as an <h1> on every page,
+        // which competed with each page's own <h1> (two h1s per document).
+        title={false}
         logo={
-          <div className="flex items-center -ml-[3px] mr-2 h-8">
-            <img src={logoSVG} alt="Cherry WMS" className="h-full w-auto" />
+          // The original brand asset, rendered pure white on the cherry header.
+          //
+          // Recolour is done with a CSS filter rather than by editing the file:
+          // logo.svg is a 625-path auto-trace with 621 distinct fills and zero
+          // strokes, so recolouring would mean rewriting every fill and keeping a
+          // second 357 KB file in sync. `brightness(0) invert(1)` was verified to
+          // render pixel-identically to the hand-recoloured version.
+          //
+          // Size floor is 40px: measured on a 28/32/36/40/48/56 ladder, the mark
+          // is unreadable speckle at 28px and only resolves from ~36-40px up,
+          // because the form is carried entirely by fill colour, not line work.
+          // `!` is mandatory — ProLayout hard-sets the logo img to 28px with
+          // unlayered CSS, which beats Tailwind's @layer utilities outright.
+          <div className="flex items-center h-full -ml-[3px] mr-2">
+            <img
+              src={logoSVG}
+              alt="Cherry WMS"
+              className="!h-8 sm:!h-10 !w-auto shrink-0"
+              style={{ filter: 'brightness(0) invert(1)' }}
+            />
           </div>
         }
         layout="mix"
         contentWidth="Fluid"
         fixedHeader
         fixSiderbar
-        colorPrimary="#D23148"
+        colorPrimary="#E61B2B"
         location={{
           pathname,
         }}
@@ -74,20 +94,28 @@ const AppLayout: React.FC = () => {
         actionsRender={(props) => {
           if (props.isMobile) return [];
           return [
-            <a key="logout" onClick={() => logout()} className="text-slate-500 hover:text-primary transition-colors text-sm font-medium mr-4">
+            <button key="logout" type="button" onClick={() => logout()} className="console-logout">
               退出登录
-            </a>
+            </button>
           ];
         }}
         token={{
           header: {
-            colorBgHeader: '#FFFFFF',
-            colorHeaderTitle: '#1E293B',
+            colorBgHeader: '#E61B2B',
+            colorHeaderTitle: '#FFFFFF',
+            // Pure white throughout: #E61B2B is only 4.61:1 against white, so
+            // the previous pale-pink (#FCE4E9) would drop to 3.82:1 and fail AA.
+            colorTextRightActionsItem: '#FFFFFF',
+            colorTextMenu: '#FFFFFF',
+            colorTextMenuSelected: '#FFFFFF',
+            colorTextMenuActive: '#FFFFFF',
+            colorBgMenuItemSelected: 'rgba(255,255,255,0.18)',
+            colorBgMenuItemHover: 'rgba(255,255,255,0.12)',
           },
           sider: {
-            colorBgMenuItemSelected: 'rgba(210, 49, 72, 0.1)',
-            colorTextMenuSelected: '#D23148',
-            colorTextMenuItemHover: '#D23148',
+            colorBgMenuItemSelected: '#FEF3F4',
+            colorTextMenuSelected: '#A2121C',
+            colorTextMenuItemHover: '#C41522',
           },
         }}
         menuItemRender={(item, dom) => (

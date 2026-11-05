@@ -1,16 +1,113 @@
-@import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500;600;700&display=swap");
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind v4. Preflight is intentionally NOT imported (antd ships its own
+   reset and the two fight) — this is the v4 equivalent of the old
+   `corePlugins: { preflight: false }`. There is deliberately no JS config:
+   v4 only reads one via an explicit `@config`, and the tokens below are the
+   single source of truth. Do not reintroduce tailwind.config.js.
+   Layer order follows import order: theme before utilities. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@source "../index.html";
+@source "./**/*.{js,ts,jsx,tsx}";
+
+/* Cherry design tokens. @theme both generates the utilities (bg-cherry-700,
+   text-ink-muted, rounded-lg ...) and emits plain CSS vars on :root, so the
+   hand-written antd overrides below can reference the same values. */
+@theme {
+  /* Brand ramp, derived from the exact brand red #E61B2B at step 500.
+     Measured on white: 500 = 4.61:1 (AA for text, little headroom),
+     600 = 6.04:1, 700 = 7.96:1. Steps 600/700 are the hover/pressed
+     states — the base is already near the AA floor, so interaction
+     states darken rather than lighten. */
+  --color-cherry-50: #fef3f4;
+  --color-cherry-100: #fde3e5;
+  --color-cherry-200: #fbc5c9;
+  --color-cherry-300: #f79aa1;
+  --color-cherry-400: #f05e6c;
+  --color-cherry-500: #e61b2b; /* BRAND — buttons, active state, highlights */
+  --color-cherry-600: #c41522; /* hover */
+  --color-cherry-700: #a2121c; /* pressed / active, dark chart stop */
+  --color-cherry-800: #851018;
+  --color-cherry-900: #6b0d14;
+
+  /* Semantic aliases */
+  --color-primary: var(--color-cherry-500);
+  --color-primary-hover: var(--color-cherry-600);
+  --color-primary-active: var(--color-cherry-700);
+  --color-on-primary: #ffffff;
+  --color-accent: var(--color-cherry-500);
+
+  /* Neutrals. Near-neutral greys (a trace of warmth, no slate-blue cast) so
+     they read crisp beside the saturated red without fighting it.
+     Contrast on --color-surface: ink 16.1:1, body 8.2:1, muted 5.9:1. */
+  --color-ink: #1b1d21;
+  --color-ink-body: #43474e;
+  --color-ink-muted: #6b7280;
+  --color-ink-faint: #9ca3af; /* placeholders only, never data */
+
+  /* Three surface tiers. Modules lift by tone as well as by shadow:
+     canvas (app shell) < surface-sunken (nested/secondary) < surface (cards). */
+  --color-surface: #ffffff; /* primary cards, main content */
+  --color-surface-sunken: #f8fafc; /* nested panels, table headers, tab strip */
+  --color-canvas: #f3f4f6; /* app shell behind everything */
+  --color-canvas-alt: var(--color-surface-sunken);
+
+  /* Borders: "barely there". Alpha rather than solid hex so they sit
+     correctly on white and on either off-white tier. */
+  --color-line: rgba(0, 0, 0, 0.06);
+  --color-line-strong: rgba(0, 0, 0, 0.1);
+
+  /* Status. The `-fg` twin exists because the fill colours fail AA as text.
+     danger-fg is deliberately deeper than the brand red: with the brand at
+     #E61B2B, a bright alert red would be indistinguishable from a primary
+     button, and the "one red on screen" alarm signal would stop working. */
+  --color-danger: #e5484d;
+  --color-danger-fg: #b42318; /* 6.57:1 on white, clearly deeper than brand */
+  --color-danger-bg: #fef3f2;
+  --color-success: #389e0d;
+  --color-success-fg: #237804;
+  --color-success-bg: #f6ffed;
+  --color-warning: #d46b08;
+  --color-warning-fg: #ad4e00;
+  --color-warning-bg: #fff7e6;
+  --color-info: #1677ff;
+  --color-info-fg: #0958d9;
+
+  /* Shape. Mirrors sinobuy's --radius: 0.75rem (12px) as the base card/panel
+     radius, with its md/sm steps derived the same way (base-2 / base-4).
+     Buttons stay at 8px rather than sinobuy's rounded-full: capsules fight the
+     input/select shapes packed into WMS table rows. */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Elevation: soft, low-opacity micro-shadows on a cool-neutral base rather
+     than hard borders. Two-layer stacks (tight contact shadow + wider
+     ambient) are what make a card read as lifted instead of outlined. */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 12px 16px -4px rgba(16, 24, 40, 0.08), 0 4px 6px -2px rgba(16, 24, 40, 0.03);
+  --shadow-xl: 0 20px 24px -4px rgba(16, 24, 40, 0.1), 0 8px 8px -4px rgba(16, 24, 40, 0.04);
+
+  /* Type. Inter for all UI text (sinobuy's sans). Playfair Display is
+     deliberately NOT adopted: it carries no CJK glyphs, so every Chinese
+     heading would silently fall back to a system font — the exact
+     inconsistency this alignment is meant to remove. Fira Code is retained
+     for numerals/codes only, matching sinobuy's own tabular-nums on prices. */
+  --font-body: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-heading: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Fira Code", ui-monospace, monospace;
+
+  /* Line heights, from sinobuy: leading-relaxed body, leading-snug headings. */
+  --leading-body: 1.625;
+  --leading-heading: 1.375;
+}
 
 :root {
-  --color-primary: #d23148;
-  --color-secondary: #60a5fa;
-  --color-cta: #f97316;
-  --color-background: #f8fafc;
-  --color-text: #1e293b;
-
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
@@ -19,19 +116,19 @@
   --space-2xl: 48px;
   --space-3xl: 64px;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.15);
+  --shadow-focus: 0 0 0 3px rgba(230, 27, 43, 0.24);
 }
 
 body {
-  font-family: "Fira Sans", sans-serif;
-  background-color: var(--color-background);
-  color: var(--color-text);
+  font-family: var(--font-body);
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  line-height: var(--leading-body);
   margin: 0;
   padding: 0;
   -webkit-font-smoothing: antialiased;
+  /* sinobuy enables these on body; keeps Inter's ligatures/alternates on. */
+  font-feature-settings: "rlig" 1, "calt" 1;
 }
 
 h1,
@@ -40,35 +137,117 @@ h3,
 h4,
 h5,
 h6 {
-  font-family: "Fira Code", monospace;
+  font-family: var(--font-heading);
+  line-height: var(--leading-heading);
+  letter-spacing: -0.01em;
 }
 
-/* Ant Design overrides to match Cherry Red theme */
+/* Focus ring. sinobuy puts `focus-visible:ring-2 ring-offset-2` on every
+   interactive element; the WMS had no focus system at all, which is both an
+   a11y gap and the most visible inconsistency for keyboard/scanner operators. */
+:where(a, button, [role="button"], input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-cherry-500);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ProLayout emits a bare <h1></h1> wrapper even when `title={false}`. An empty
+   heading is announced as a blank heading by screen readers, so remove it from
+   the a11y tree. Scoped by :empty — a heading with content is never matched. */
+h1:empty {
+  display: none;
+}
+
+/* Data utilities are deliberately UNLAYERED, not in @layer utilities. antd
+   injects unlayered CSS (e.g. .ant-statistic-content sets its own font), and
+   unlayered always beats layered regardless of specificity — inside a layer
+   these silently lose on exactly the components that need them most. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.num .ant-statistic-content-value,
+.num .ant-statistic-content {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* SKU / barcode / location codes: the operator's scan anchor. */
+.code {
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+  color: var(--color-ink);
+}
+
+/* sinobuy's eyebrow label (text-xs font-medium uppercase tracking-wider
+   text-muted-foreground) — used above card values and section titles. */
+.eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-muted);
+}
+
+/* Ant Design overrides to match the brand */
 .ant-btn-primary {
   background-color: var(--color-primary);
-  box-shadow: 0 2px 0 rgba(210, 49, 72, 0.1);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
 }
 
 .ant-btn-primary:not(:disabled):hover {
-  background-color: #e55a6b;
+  background-color: var(--color-primary-hover) !important;
+}
+
+.ant-btn-primary:not(:disabled):active {
+  background-color: var(--color-primary-active) !important;
 }
 
 .ant-layout-sider {
-  background-color: #ffffff !important;
-  border-right: 1px solid #e2e8f0;
+  background-color: var(--color-surface) !important;
+  border-right: 1px solid var(--color-line);
 }
 
 .ant-menu {
-  background-color: #ffffff !important;
+  background-color: var(--color-surface) !important;
 }
 
 .ant-menu-item-selected {
-  background-color: rgba(210, 49, 72, 0.1) !important;
+  background-color: var(--color-cherry-50) !important;
   color: var(--color-primary) !important;
+  font-weight: 500;
 }
 
 .ant-menu-submenu-selected {
   color: var(--color-primary) !important;
+}
+
+/* Cards lift by shadow, not by a hard outline. The border is a hairline of
+   pure alpha so it reads as a soft edge on white and on either off-white
+   tier, rather than a drawn box. */
+.ant-card {
+  border: 1px solid var(--color-line) !important;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 300ms ease;
+}
+
+.ant-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+/* Generous internal padding: content should never sit against the edge. */
+.ant-card > .ant-card-body {
+  padding: 20px;
+}
+
+.ant-card-small > .ant-card-body {
+  padding: 16px 18px;
+}
+
+.ant-card-small > .ant-card-head {
+  padding: 0 18px;
+  border-bottom: 1px solid var(--color-line);
+  min-height: 44px;
 }
 
 /* Custom UI/UX utilities */
@@ -80,16 +259,33 @@ h6 {
 }
 
 .card {
-  background: #ffffff;
-  border-radius: 12px;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
   padding: 24px;
   box-shadow: var(--shadow-sm);
-  transition: all 200ms ease;
-  border: 1px solid #e2e8f0;
+  /* sinobuy: transition-shadow duration-300 */
+  transition: box-shadow 300ms ease;
+  border: 1px solid var(--color-line);
 }
 
 .card:hover {
   box-shadow: var(--shadow-md);
+}
+
+/* Secondary/nested container: one tone down from a white card, used to group
+   content inside a card without nesting another border. */
+.surface-sunken {
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+}
+
+/* Alert card. Unlayered on purpose: `.ant-card` sets its own background
+   unlayered, so a Tailwind bg-* utility silently loses and the tint never
+   renders. This is the same layer-precedence trap as .num and the header link. */
+.card-alert {
+  background: var(--color-danger-bg) !important;
+  border-left: 4px solid var(--color-danger) !important;
 }
 
 .cursor-pointer {
@@ -103,13 +299,13 @@ h6 {
 
 .custom-layout-tabs .ant-tabs-nav {
   margin-bottom: 0 !important;
-  background: #f8fafc;
+  background: var(--color-canvas);
   padding-top: 8px;
 }
 
 .custom-layout-tabs .ant-tabs-tab {
-  background: #f1f5f9 !important;
-  border: 1px solid #e2e8f0 !important;
+  background: var(--color-canvas-alt) !important;
+  border: 1px solid var(--color-line) !important;
   border-bottom: none !important;
   padding: 6px 16px !important;
   transition: all 0.3s;
@@ -129,7 +325,7 @@ h6 {
 }
 
 .custom-layout-tabs .ant-tabs-content-holder {
-  background: #f1f5f9;
+  background: var(--color-canvas);
   flex: 1;
   overflow: hidden;
   display: flex;
@@ -150,9 +346,171 @@ h6 {
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  background: #f1f5f9;
+  background: var(--color-canvas);
 }
 
 .ant-pro-page-container {
   min-height: 100%;
+}
+
+/* Operations console: scoped, unlayered rules so Ant Design cannot silently
+   override the intended surface and density. Existing menu hierarchy is intact. */
+.console-shell .ant-pro-sider .ant-menu-item,
+.console-shell .ant-pro-sider .ant-menu-submenu-title {
+  font-size: 13px;
+}
+
+.console-shell .ant-menu-item-selected {
+  color: var(--color-primary-active) !important;
+}
+
+.console-shell .console-logout {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--color-on-primary);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px;
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.console-shell .console-logout:hover { text-decoration: underline; }
+.console-shell .console-logout:focus-visible { outline-color: var(--color-on-primary); }
+.console-shell .custom-layout-tabs .ant-tabs-tab { transition: background-color 150ms ease; }
+
+.console-dashboard {
+  padding: 24px;
+  max-width: 1800px;
+  margin: 0 auto;
+  color: var(--color-ink);
+}
+
+.console-dashboard *, .console-data-page, .console-workstation { box-sizing: border-box; }
+.console-page-heading, .console-heading-actions, .console-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.console-page-heading { margin-bottom: 20px; flex-wrap: wrap; }
+.console-page-heading h1 { margin: 4px 0; font-size: 26px; font-weight: 600; }
+.console-page-heading .eyebrow, .console-panel-heading .eyebrow { margin: 0; font-size: 10px; letter-spacing: .12em; }
+.console-heading-actions { flex-wrap: wrap; gap: 12px; }
+.console-caption { margin: 0; color: var(--color-ink-muted); font-size: 12px; line-height: 1.5; }
+.console-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.console-metric {
+  min-width: 0;
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+}
+.console-metric-label { display: flex; justify-content: space-between; gap: 6px; color: var(--color-ink-muted); font-size: 12px; }
+.console-metric-label > span:first-child { min-width: 0; }
+.console-metric-label > .anticon { font-size: 11px; margin-top: 4px; }
+.console-metric-value { margin-top: 14px; font-size: 28px; line-height: 1.2; font-weight: 500; letter-spacing: -.04em; }
+.console-metric-unit { font-family: var(--font-body); color: var(--color-ink-muted); font-size: 12px; margin-left: 6px; letter-spacing: 0; }
+.console-metric-alert { background: var(--color-danger-bg); box-shadow: inset 0 2px 0 var(--color-danger-fg); }
+.console-metric-alert .console-metric-value, .console-metric-alert .console-metric-label { color: var(--color-danger-fg); }
+.console-overview-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(280px, 1fr); gap: 20px; }
+.console-panel {
+  min-width: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+.console-panel-heading { margin-bottom: 16px; }
+.console-panel-heading h2 { margin: 4px 0 0; font-size: 16px; font-weight: 600; }
+.console-muted-icon { color: var(--color-ink-muted); font-size: 16px; }
+.console-panel-note { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--color-line); font-size: 11px; line-height: 1.6; color: var(--color-ink-muted); }
+.console-panel-note .anticon { margin-right: 4px; }
+.console-task-list { list-style: none; padding: 0; margin: 0; }
+.console-task-row { display: flex; align-items: center; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--color-line); }
+.console-task-row:last-child { border-bottom: 0; }
+.console-task-icon { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 8px; background: var(--color-surface-sunken); color: var(--color-ink-body); }
+.console-task-name { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.console-task-name strong { font-size: 13px; font-weight: 500; }
+.console-task-count { font-size: 20px; font-weight: 500; }
+.console-task-open, .console-task-open-placeholder { width: 32px; height: 32px; flex-shrink: 0; }
+.console-task-open { display: grid; place-items: center; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); color: var(--color-primary-hover); }
+.console-task-open:hover { color: var(--color-primary-active); background: var(--color-cherry-50); border-color: var(--color-primary); }
+.console-capacity-summary { display: flex; justify-content: space-between; align-items: end; margin: 6px 0 20px; gap: 12px; }
+.console-capacity-value { font-size: 34px; letter-spacing: -.04em; line-height: 1.3; }
+.console-capacity-value small { font-size: 17px; margin-left: 3px; }
+.console-capacity-bar { display: flex; height: 10px; overflow: hidden; border-radius: 4px; background: var(--color-canvas); }
+.console-capacity-occupied { background: var(--color-primary); }
+.console-capacity-reserved { background: var(--color-cherry-200); }
+.console-capacity-empty { background: var(--color-canvas); }
+.console-capacity-legend { margin: 16px 0 0; }
+.console-capacity-legend > div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; font-size: 12px; }
+.console-capacity-legend dt { display: flex; align-items: center; gap: 8px; color: var(--color-ink-body); }
+.console-capacity-legend dd { margin: 0; }
+.console-capacity-legend i { width: 8px; height: 8px; border: 1px solid var(--color-line); border-radius: 2px; }
+.console-shortcuts { display: flex; flex-direction: column; }
+.console-shortcuts a { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 11px 0; color: var(--color-ink-body); font-size: 13px; border-bottom: 1px solid var(--color-line); }
+.console-shortcuts a:last-child { border-bottom: 0; }
+.console-shortcuts a > span > .anticon { color: var(--color-ink-muted); margin-right: 8px; }
+.console-shortcuts a > .anticon { font-size: 11px; color: var(--color-ink-muted); }
+.console-shortcuts a:hover, .console-shortcuts a:hover > .anticon { color: var(--color-primary-hover); }
+.console-resource-error { margin-bottom: 16px; }
+
+.console-data-page .ant-page-header, .console-workstation .ant-page-header { padding-top: 20px; padding-bottom: 16px; }
+.console-data-page .ant-page-header-heading-title, .console-workstation .ant-page-header-heading-title { font-size: 24px; font-weight: 600; }
+.console-data-page .ant-pro-table-list-toolbar-title { font-size: 15px; font-weight: 600; }
+.console-data-page .ant-pro-table .ant-table { font-size: 13px; }
+.console-data-page .ant-table-cell { font-variant-numeric: tabular-nums; }
+.console-data-page .console-code-cell { font-family: var(--font-mono); font-size: 12px; }
+.console-data-page .console-danger-action { color: var(--color-danger-fg); }
+.console-data-page .console-primary-action { color: var(--color-primary-hover); }
+.console-detail-drawer .ant-descriptions-title { font-size: 14px; }
+.console-detail-drawer .ant-descriptions-item-content { overflow-wrap: anywhere; }
+.console-detail-drawer .ant-drawer-body { background: var(--color-surface); }
+.console-workstation .console-scan-panel { position: sticky; top: 16px; border-top: 2px solid var(--color-primary) !important; }
+.console-workstation .console-stage-label { display: block; margin-bottom: 8px; color: var(--color-ink-muted); font-size: 11px; font-weight: 500; letter-spacing: .06em; }
+.console-workstation .console-scan-input { font-family: var(--font-mono); }
+.console-workstation .console-scan-feedback { margin-top: 12px; }
+.console-workstation .console-complete-number { color: var(--color-success-fg); font-weight: 600; }
+.console-workstation .console-pending-number { color: var(--color-warning-fg); font-weight: 600; }
+.console-workstation .ant-statistic-content { font-variant-numeric: tabular-nums; }
+.console-workstation .ant-descriptions-item-content { overflow-wrap: anywhere; }
+
+@media (max-width: 1200px) {
+  .console-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .console-overview-grid { grid-template-columns: minmax(0, 1.4fr) minmax(250px, 1fr); gap: 16px; }
+}
+@media (max-width: 900px) {
+  .console-dashboard { padding: 16px; }
+  .console-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .console-trend { grid-row: auto; }
+}
+@media (max-width: 575px) {
+  .console-dashboard { padding: 16px 8px; }
+  .console-page-heading h1 { font-size: 24px; }
+  .console-page-heading { align-items: start; }
+  .console-heading-actions { width: 100%; justify-content: space-between; }
+  .console-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .console-metric { padding: 12px; }
+  .console-metric-value { font-size: 25px; }
+  .console-panel { padding: 16px; }
+  .console-data-page .ant-pro-page-container-children-container,
+  .console-workstation .ant-pro-page-container-children-container { padding-inline: 8px; }
+  .console-workstation .console-scan-panel { position: static; }
+}
+
+/* Respect reduced-motion: warehouse terminals are low-powered and some
+   operators are motion-sensitive. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

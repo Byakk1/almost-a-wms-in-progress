@@ -366,6 +366,9 @@ const BulkImportModal: React.FC<{ open: boolean; onClose: () => void; onSuccess:
 };
 
 const OutboundList: React.FC = () => {
+  // ProTable snapshots each column's `fixed` on mount, and Grid.useBreakpoint() is still {} on the
+  // first render — so read the antd `lg` breakpoint (992px) synchronously instead.
+  const [pinActions] = useState(() => window.matchMedia('(min-width: 992px)').matches);
   const actionRef = useRef<ActionType>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -423,6 +426,7 @@ const OutboundList: React.FC = () => {
       title: '出库单号',
       dataIndex: 'orderNo',
       copyable: true,
+      className: 'console-code-cell',
       width: 180,
     },
     {
@@ -433,6 +437,7 @@ const OutboundList: React.FC = () => {
     {
       title: 'SKU件数',
       dataIndex: 'totalItems',
+      align: 'right',
       width: 100,
       search: false,
     },
@@ -480,6 +485,7 @@ const OutboundList: React.FC = () => {
     {
       title: '费用',
       dataIndex: 'fee',
+      align: 'right',
       width: 90,
       search: false,
       render: (_, r) => r.fee ?? '-',
@@ -495,6 +501,7 @@ const OutboundList: React.FC = () => {
       title: '操作',
       valueType: 'option',
       width: 260,
+      fixed: pinActions ? 'right' : undefined,
       render: (_, row) => {
         const actions = ACTIONS[row.status] ?? [];
         const nodes = actions.map((a) => (
@@ -505,13 +512,13 @@ const OutboundList: React.FC = () => {
             okText="确认"
             cancelText="取消"
           >
-            <a className={a.danger ? 'text-red-500 hover:text-red-400 font-medium' : 'text-primary hover:text-primary-light font-medium'}>
+            <a className={a.danger ? 'console-danger-action' : 'console-primary-action'}>
               {a.label}
             </a>
           </Popconfirm>
         ));
         nodes.push(
-          <a key="view" className="text-secondary hover:text-blue-400" onClick={() => openDetail(row.id)}>详情</a>,
+          <a key="view" className="console-primary-action" onClick={() => openDetail(row.id)}>详情</a>,
           <Dropdown
             key="more"
             menu={{ items: [{ key: 'print', label: '打印拣货单' }] }}
@@ -528,6 +535,7 @@ const OutboundList: React.FC = () => {
 
   return (
     <PageContainer
+      className="console-data-page"
       header={{
         title: '出库订单管理',
         subTitle: '管理出库单据全流程：分配 → 拣货 → 打包 → 发货',
@@ -537,6 +545,8 @@ const OutboundList: React.FC = () => {
         columns={columns}
         actionRef={actionRef}
         cardBordered
+        size="small"
+        scroll={{ x: 1400 }}
         request={fetchOutbound}
         rowKey="id"
         search={{
@@ -565,7 +575,8 @@ const OutboundList: React.FC = () => {
 
       <Drawer
         title={detailData ? `出库单 ${detailData.orderNo}` : '出库单详情'}
-        width={760}
+        width="min(760px, 100vw)"
+        rootClassName="console-detail-drawer"
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
       >

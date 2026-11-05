@@ -67,3 +67,7 @@ pnpm-debug.log*
 .idea/
 *.suo
 *.sw?
+
+# ── Verification artefacts (screenshots, brainstorm scratch) — reproducible, not source ──
+/.superpowers/
+wms-frontend/scripts/shots/

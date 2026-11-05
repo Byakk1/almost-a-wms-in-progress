@@ -148,7 +148,7 @@ const PackingWorkbench: React.FC = () => {
   const columns = [
     {
       title: 'SKU', dataIndex: 'sku', width: 160,
-      render: (v: string) => <code className="text-xs bg-slate-100 px-1 rounded">{v}</code>,
+      render: (v: string) => <code className="code">{v}</code>,
     },
     { title: '商品名称', dataIndex: 'productName', ellipsis: true },
     { title: '需求', dataIndex: 'requiredQty', width: 80 },
@@ -156,7 +156,7 @@ const PackingWorkbench: React.FC = () => {
     {
       title: '已打包', dataIndex: 'packedQty', width: 90,
       render: (v: number, r: PackItem) => (
-        <span style={{ color: v >= r.requiredQty ? token.colorSuccess : token.colorWarning, fontWeight: 600 }}>{v}</span>
+        <span className={`num ${v >= r.requiredQty ? 'console-complete-number' : 'console-pending-number'}`}>{v}</span>
       ),
     },
     {
@@ -188,6 +188,7 @@ const PackingWorkbench: React.FC = () => {
 
   return (
     <PageContainer
+      className="console-workstation"
       header={{
         title: '按单打包台',
         subTitle: '选择已拣货订单，逐 SKU 扫码打包',
@@ -202,10 +203,11 @@ const PackingWorkbench: React.FC = () => {
         <Col xs={24} lg={9}>
           <Card
             title={<Space><ScanOutlined style={{ color: token.colorPrimary }} /><span>选单 + 扫码</span></Space>}
-            className="shadow-sm"
-            style={{ position: 'sticky', top: 80 }}
+            className="console-scan-panel"
           >
+            <span className="console-stage-label">01 / ORDER CONTEXT</span>
             <Select
+              aria-label="Select packing order"
               showSearch
               style={{ width: '100%' }}
               size="large"
@@ -223,7 +225,10 @@ const PackingWorkbench: React.FC = () => {
             {order && (
               <>
                 <Divider />
+                <span className="console-stage-label">02 / SCAN SKU</span>
                 <Input
+                  aria-label="Scan SKU"
+                  className="console-scan-input"
                   ref={scanRef}
                   size="large"
                   value={scanValue}
@@ -239,12 +244,15 @@ const PackingWorkbench: React.FC = () => {
             )}
 
             {lastStatus !== 'idle' && (
-              <Alert className="mt-3" type={lastStatus === 'ok' ? 'success' : 'error'} message={lastMsg} showIcon />
+              <div className="console-scan-feedback" role="status" aria-live="polite">
+                <Alert type={lastStatus === 'ok' ? 'success' : 'error'} message={lastMsg} showIcon />
+              </div>
             )}
 
             {order && (
               <>
                 <Divider />
+                <span className="console-stage-label">03 / PACKING PROGRESS</span>
                 <Row gutter={12} className="text-center">
                   <Col span={12}>
                     <Statistic title="已打包" value={totalPacked} valueStyle={{ color: token.colorPrimary, fontSize: 24 }} />
@@ -307,7 +315,7 @@ const PackingWorkbench: React.FC = () => {
                     {[order.shipToCity, order.shipToCountry].filter(Boolean).join(' · ') || '—'}
                   </Descriptions.Item>
                 </Descriptions>
-                <Table dataSource={order.items} columns={columns} size="small" rowKey="sku" pagination={false} />
+                <Table dataSource={order.items} columns={columns} size="small" rowKey="sku" pagination={false} scroll={{ x: 620 }} />
               </>
             )}
           </Card>
