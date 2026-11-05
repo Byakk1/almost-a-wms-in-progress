@@ -53,6 +53,13 @@
 **/*ratecard*.sql
 **/seed-rates*
 
+# ── Database dumps (a dump IS the rate-card data; the repo is public) ──
+*.dump
+*.dump.sha256
+*.sql.gz
+*.backup
+/wms-backups/
+
 # ── Dependencies & build output ──
 node_modules/
 dist/
