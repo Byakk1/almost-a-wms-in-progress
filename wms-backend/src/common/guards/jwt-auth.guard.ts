@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { jwtSecret } from '../secrets';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -32,7 +33,7 @@ export class JwtAuthGuard implements CanActivate {
     const token = authorization.replace('Bearer ', '');
     try {
       const payload = this.jwtService.verify(token, {
-        secret: process.env.JWT_SECRET || 'wms-dev-secret',
+        secret: jwtSecret(),
       });
       req.user = payload;
       return true;

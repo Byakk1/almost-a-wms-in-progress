@@ -7,7 +7,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/api/v1': {
-        target: 'http://localhost:3001',
+        // Explicit IPv4: the API binds 127.0.0.1, while "localhost" can resolve
+        // to ::1 on Windows and miss the listener.
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
       },
     },

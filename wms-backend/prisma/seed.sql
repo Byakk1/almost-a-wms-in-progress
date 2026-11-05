@@ -1,8 +1,11 @@
 -- Seed for Auth / Customers / Products (idempotent)
 
 -- 1) Admin user
--- passwordHash is a bcrypt digest (cost 10) of the dev password "123456".
--- It must NOT be stored in cleartext: AuthService compares with bcrypt.compare and
+-- passwordHash is a bcrypt digest (cost 10) of the initial bootstrap password.
+-- The initial value is documented only in the private deployment runbook, never
+-- here: this repository is public, and a password named in it would be a working
+-- credential for any deployment that seeded from this file and never rotated.
+-- Must NOT be stored in cleartext: AuthService compares with bcrypt.compare and
 -- has no plaintext fallback, so a literal password here would simply fail to log in.
 -- To rotate: node -e "console.log(require('bcrypt').hashSync('<new>',10))"
 INSERT INTO "User" ("id", "email", "passwordHash", "name", "role", "warehouseId", "createdAt", "updatedAt")

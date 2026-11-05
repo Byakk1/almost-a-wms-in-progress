@@ -75,7 +75,7 @@ const Login: React.FC = () => {
           >
             <Input 
               prefix={<UserOutlined className="text-slate-400" />} 
-              placeholder="Username or Email (admin)"
+              placeholder="用户名或邮箱"
               className="rounded-lg hover:border-primary focus:border-primary"
             />
           </Form.Item>
@@ -87,7 +87,7 @@ const Login: React.FC = () => {
             <Input.Password
               prefix={<LockOutlined className="text-slate-400" />}
               type="password"
-              placeholder="Password (123456)"
+              placeholder="请输入密码"
               className="rounded-lg hover:border-primary focus:border-primary"
             />
           </Form.Item>

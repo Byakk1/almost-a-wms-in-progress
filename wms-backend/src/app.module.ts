@@ -26,6 +26,7 @@ import { BoxesModule } from './boxes/boxes.module';
 import { RateCardsModule } from './rate-cards/rate-cards.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { jwtSecret } from './common/secrets';
 
 @Module({
   imports: [
@@ -37,8 +38,11 @@ import { RolesGuard } from './common/guards/roles.guard';
       },
     ]),
     CommonModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'wms-dev-secret',
+    // registerAsync (not register): the factory runs during DI bootstrap, after
+    // ConfigModule has loaded .env — evaluating jwtSecret() at import time would
+    // read process.env before the file is loaded.
+    JwtModule.registerAsync({
+      useFactory: () => ({ secret: jwtSecret() }),
     }),
     PrismaModule,
     AuthModule,

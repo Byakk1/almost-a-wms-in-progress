@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { Role } from '@prisma/client';
+import { jwtRefreshSecret, jwtSecret } from '../common/secrets';
 
 /**
  * Cost factor for password hashing. 10 is the common default — ~50ms per hash on
@@ -116,7 +117,7 @@ export class AuthService {
 
     const token = authorization.replace('Bearer ', '');
     const payload = this.jwtService.verify(token, {
-      secret: process.env.JWT_SECRET || 'wms-dev-secret',
+      secret: jwtSecret(),
     });
 
     const user = await this.prisma.user.findUnique({
@@ -174,7 +175,7 @@ export class AuthService {
         warehouseId: user.warehouseId,
       },
       {
-        secret: process.env.JWT_SECRET || 'wms-dev-secret',
+        secret: jwtSecret(),
         expiresIn: '7d',
       },
     );
@@ -187,7 +188,7 @@ export class AuthService {
         type: 'refresh',
       },
       {
-        secret: process.env.JWT_REFRESH_SECRET || 'wms-dev-refresh-secret',
+        secret: jwtRefreshSecret(),
         expiresIn: '30d',
       },
     );
