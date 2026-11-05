@@ -68,8 +68,13 @@ model User {
   role         Role       @default(OPERATOR)
   warehouseId  String?
   warehouse    Warehouse? @relation(fields: [warehouseId], references: [id])
+  // Soft-disable instead of delete: OperationLog.operatorId must keep resolving.
+  isActive     Boolean    @default(true)
+  lastLoginAt  DateTime?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
+
+  @@index([isActive])
 }
 
 model Warehouse {

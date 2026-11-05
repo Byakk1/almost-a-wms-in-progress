@@ -24,6 +24,7 @@ import { BillsModule } from './bills/bills.module';
 import { TransitOrdersModule } from './transit-orders/transit-orders.module';
 import { BoxesModule } from './boxes/boxes.module';
 import { RateCardsModule } from './rate-cards/rate-cards.module';
+import { UsersModule } from './users/users.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { jwtSecret } from './common/secrets';
@@ -62,6 +63,7 @@ import { jwtSecret } from './common/secrets';
     TransitOrdersModule,
     BoxesModule,
     RateCardsModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [

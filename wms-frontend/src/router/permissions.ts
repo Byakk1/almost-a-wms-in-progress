@@ -80,6 +80,8 @@ export const routePermissions: Record<string, Role[]> = {
   // OPERATOR is not — a warehouse operator has no reason to read the full
   // commercial price list.
   '/settings/rate-cards': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'FINANCE', 'CUSTOMER_SERVICE'],
+  // users.controller GET roles — a warehouse admin sees (only) their own warehouse's staff.
+  '/settings/users': ADMIN,
 };
 
 // Capability key → roles (mirrors the stricter backend WRITE endpoints).
@@ -105,6 +107,8 @@ export const actionPermissions: Record<string, Role[]> = {
   // rate-cards create / activate / archive / assign — deliberately tighter than
   // the OPS_CS used elsewhere, because this is commercial pricing.
   'rateCard.write': ['SUPER_ADMIN', 'FINANCE'],
+  // users create / update / deactivate / reactivate / reset-password — SUPER_ADMIN only.
+  'user.write': ['SUPER_ADMIN'],
 };
 
 export function hasRole(allowed: Role[] | undefined, role: string | null | undefined): boolean {

@@ -18,6 +18,13 @@ import { jwtRefreshSecret, jwtSecret } from '../common/secrets';
  */
 const BCRYPT_ROUNDS = 10;
 
+/**
+ * A syntactically valid bcrypt digest that no password matches, used to keep login
+ * timing constant when the email is unknown. Generating it once at module load costs
+ * a single hash; comparing against it costs the same as a real comparison.
+ */
+const DUMMY_HASH = bcrypt.hashSync('__no_such_password__', BCRYPT_ROUNDS);
+
 type SafeUser = {
   id: string;
   email: string;
@@ -37,12 +44,24 @@ export class AuthService {
 
   async login(email: string, password: string) {
     const user = await this.prisma.user.findUnique({
-      where: { email },
+      where: { email: email.trim().toLowerCase() },
     });
 
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    // A disabled account reports exactly the same failure as a wrong password —
+    // telling an attacker "this account exists but is disabled" is a free hint.
+    // bcrypt.compare still runs against a fixed dummy digest when there is no user,
+    // so response timing does not reveal account existence either.
+    const hash = user?.passwordHash ?? DUMMY_HASH;
+    const passwordOk = await bcrypt.compare(password, hash);
+    if (!user || !user.isActive || !passwordOk) {
       throw new UnauthorizedException('邮箱或密码错误');
     }
+
+    // The one write on the login path: last successful login, for the admin list.
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    });
 
     const accessToken = this.signAccessToken({
       id: user.id,
@@ -75,7 +94,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
-    if (!user) {
+    if (!user || !user.isActive) {
       throw new UnauthorizedException('用户不存在');
     }
 
