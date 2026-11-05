@@ -535,7 +535,10 @@ export class OutboundOrdersService {
 
       const updated = await tx.outboundOrder.update({
         where: { id },
-        data: { status: 'SHIPPED' },
+        // shippedAt is stamped HERE because billing's window filter reads this
+        // column (BillsService, E4): before this fix nothing in production code
+        // ever wrote it, so every real month would have billed empty.
+        data: { status: 'SHIPPED', shippedAt: new Date() },
       });
 
       await this.opLog.log(

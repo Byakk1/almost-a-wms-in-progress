@@ -435,6 +435,17 @@ model CustomerBill {
   status     String    @default("unpaid")
   dueDate    DateTime?
   paidAt     DateTime?
+  // E4: true while any line is not yet final (pending fuel pass-through or a
+  // flagged manual review). Cleared only by finalize(); may be true while paid
+  // (escrow-style payment against a provisional amount — accepted workflow).
+  isProvisional     Boolean   @default(false)
+  // E4: verbatim warnings shown on the invoice (unpriced events, storage waiver,
+  // export-review flags). Stored rather than recomputed so the bill reads as issued.
+  warnings          Json?
+  // E4: snapshot of the billing entity's tax registration number at generation.
+  taxRegistrationNo String?
+  // E4: set when finalize() clears a provisional bill.
+  finalizedAt       DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -450,6 +461,51 @@ model BillItem {
   qty         Decimal
   unitPrice   Decimal
   totalAmount Decimal
+  // E4: BASE | SURCHARGE | TAX | UNPRICED. NULL on pre-E4 rows — read as BASE.
+  kind          String?
+  // E4: true for lines whose amount is not yet final (pending fuel, review flags).
+  isProvisional Boolean @default(false)
+}
+
+// ─── E4: tax rates (public law — safe in the repo) ───────────────────────────
+// One row per (country, jurisdiction, taxType, effective window). Resolution is
+// by (countryCode, jurisdiction) at period end; CA uses province codes as
+// jurisdiction, non-CA uses a zero-rated EXPORT row (manual review).
+model TaxRate {
+  id            String    @id @default(cuid())
+  countryCode   String
+  jurisdiction  String
+  taxType       String // GST | HST | PST | QST | EXPORT
+  ratePercent   Decimal   @db.Decimal(6, 3)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  isActive      Boolean   @default(true)
+  note          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([countryCode, jurisdiction, taxType, effectiveFrom])
+}
+
+// ─── E4: surcharge definitions ────────────────────────────────────────────────
+// FLAT | PERCENT_OF_BASE | PASS_THROUGH. Values for FLAT/PERCENT are commercial
+// data (enter via UI/import, never committed). PASS_THROUGH carries no value by
+// design — the amount arrives on the carrier's bill and is entered at finalize.
+model Surcharge {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  name          String
+  calcType      String // FLAT | PERCENT_OF_BASE | PASS_THROUGH
+  value         Decimal?  @db.Decimal(12, 4)
+  taxable       Boolean   @default(true)
+  carrier       String? // NULL = applies to all carriers
+  appliesTo     String    @default("ALL") // SHIPPING | HANDLING | ALL
+  note          String?
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 model OutboundException {

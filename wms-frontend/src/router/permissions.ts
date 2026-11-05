@@ -82,6 +82,10 @@ export const routePermissions: Record<string, Role[]> = {
   '/settings/rate-cards': ['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'FINANCE', 'CUSTOMER_SERVICE'],
   // users.controller GET roles — a warehouse admin sees (only) their own warehouse's staff.
   '/settings/users': ADMIN,
+  // E4 billing config. Tax rates are public law and FINANCE reads them to answer
+  // tax questions; writes are SUPER_ADMIN (mirrors tax-rates/surcharges controllers).
+  '/settings/tax-rates': ['SUPER_ADMIN', 'FINANCE'],
+  '/settings/surcharges': ['SUPER_ADMIN', 'FINANCE'],
 };
 
 // Capability key → roles (mirrors the stricter backend WRITE endpoints).
@@ -109,6 +113,12 @@ export const actionPermissions: Record<string, Role[]> = {
   'rateCard.write': ['SUPER_ADMIN', 'FINANCE'],
   // users create / update / deactivate / reactivate / reset-password — SUPER_ADMIN only.
   'user.write': ['SUPER_ADMIN'],
+  // E4: mark-paid and finalize — FINANCE + SUPER_ADMIN only. CS is deliberately
+  // excluded: confirming cash receipt is an internal-control function.
+  'bill.pay': ['SUPER_ADMIN', 'FINANCE'],
+  'bill.finalize': ['SUPER_ADMIN', 'FINANCE'],
+  // tax-rates / surcharges create / update — SUPER_ADMIN only (controllers).
+  'billing.config': ['SUPER_ADMIN'],
 };
 
 export function hasRole(allowed: Role[] | undefined, role: string | null | undefined): boolean {

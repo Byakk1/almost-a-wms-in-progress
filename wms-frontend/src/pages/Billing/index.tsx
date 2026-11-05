@@ -1,236 +1,243 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PageContainer, ProTable } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
-import { Button, Tag, Space, Card, Row, Col, Statistic, Drawer, Descriptions, Table, Divider } from 'antd';
-import { FileTextOutlined, ExportOutlined, EyeOutlined, PrinterOutlined } from '@ant-design/icons';
-
-interface BillItem {
-  id: string;
-  billNo: string;
-  customerName: string;
-  period: string;
-  freightFee: number;
-  storageFee: number;
-  handlingFee: number;
-  surcharges: number;
-  totalAmount: number;
-  status: 'UNPAID' | 'PARTIAL' | 'PAID' | 'OVERDUE';
-  dueDate: string;
-  billedAt: string;
-}
-
-const mockBills: BillItem[] = [
-  {
-    id: '1', billNo: 'BILL-2026-02-001', customerName: '深圳市大卖贸易',
-    period: '2026-02', freightFee: 4580, storageFee: 320, handlingFee: 450, surcharges: 180,
-    totalAmount: 5530, status: 'UNPAID', dueDate: '2026-03-15', billedAt: '2026-02-28',
-  },
-  {
-    id: '2', billNo: 'BILL-2026-02-002', customerName: 'Global E-commerce Ltd.',
-    period: '2026-02', freightFee: 12800, storageFee: 960, handlingFee: 1200, surcharges: 640,
-    totalAmount: 15600, status: 'PAID', dueDate: '2026-03-10', billedAt: '2026-02-28',
-  },
-  {
-    id: '3', billNo: 'BILL-2026-02-003', customerName: '跨境优品',
-    period: '2026-02', freightFee: 2200, storageFee: 110, handlingFee: 220, surcharges: 0,
-    totalAmount: 2530, status: 'OVERDUE', dueDate: '2026-03-05', billedAt: '2026-02-28',
-  },
-  {
-    id: '4', billNo: 'BILL-2026-01-001', customerName: '深圳市大卖贸易',
-    period: '2026-01', freightFee: 3980, storageFee: 280, handlingFee: 380, surcharges: 120,
-    totalAmount: 4760, status: 'PAID', dueDate: '2026-02-15', billedAt: '2026-01-31',
-  },
-];
+import {
+  Card, Col, DatePicker, Modal, Row, Select, Space, Statistic, Tag, Typography, message, theme,
+} from 'antd';
+import { FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
+import dayjs from 'dayjs';
+import { useCan } from '../../router/permissions';
+import BillDetailDrawer from './BillDetailDrawer';
+import {
+  STATUS_COLOR, STATUS_LABEL, errMsg, fmtDay, fmtMoney, listBills, listCustomerOptions, markBillPaid, toNum,
+} from './api';
+import type { Bill, CustomerOption } from './api';
 
 const BillingDashboard: React.FC = () => {
+  const { token } = theme.useToken();
   const actionRef = useRef<ActionType>(null);
-  const [drawerBill, setDrawerBill] = useState<BillItem | null>(null);
+  const canPay = useCan('bill.pay');
+  const canFinalize = useCan('bill.finalize');
+  const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  // The last page the table loaded, for the KPI cards. They summarise what is
+  // on screen for the filtered month — not a server aggregate — so the label
+  // says 本月 and the subtitle says which month.
+  const [loaded, setLoaded] = useState<{ period: string | undefined; rows: Bill[]; total: number }>({
+    period: undefined, rows: [], total: 0,
+  });
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const fetchBills = async (_params: any, _sort: any, _filter: any) => {
-    await new Promise((r) => setTimeout(r, 600));
-    return { data: mockBills, success: true, total: mockBills.length };
+  useEffect(() => {
+    listCustomerOptions().then(setCustomers).catch(() => {});
+  }, []);
+
+  const customerOptions = useMemo(
+    () => customers.map((c) => ({ value: c.id, label: c.code ? `${c.code} · ${c.name}` : c.name })),
+    [customers],
+  );
+
+  const fetchList = async (params: any) => {
+    const period: string | undefined = params.period
+      ? dayjs(params.period).format('YYYY-MM')
+      : undefined;
+    const res = await listBills({
+      customerId: params.customerId || undefined,
+      period,
+      status: params.status || undefined,
+      isProvisional: params.isProvisional === undefined || params.isProvisional === '' ? undefined : params.isProvisional === 'true',
+      page: params.current,
+      pageSize: params.pageSize,
+    });
+    const rows = res?.data ?? [];
+    setLoaded({ period, rows, total: res?.pagination?.total ?? rows.length });
+    return { data: rows, success: true, total: res?.pagination?.total ?? rows.length };
   };
 
-  const totalUnpaid = mockBills
-    .filter((b) => b.status === 'UNPAID' || b.status === 'OVERDUE')
-    .reduce((s, b) => s + b.totalAmount, 0);
+  const kpi = useMemo(() => {
+    const rows = loaded.rows;
+    return {
+      count: loaded.total,
+      amount: rows.reduce((s, b) => s + toNum(b.amount), 0),
+      unpaid: rows.filter((b) => b.status !== 'paid').reduce((s, b) => s + toNum(b.amount), 0),
+      provisional: rows.filter((b) => b.isProvisional).length,
+    };
+  }, [loaded]);
 
-  const columns: ProColumns<BillItem>[] = [
+  // Declarative <Modal>, not the static Modal.confirm(): under antd 5 + React 19
+  // the static function cannot consume the ConfigProvider context and renders
+  // NOTHING (probed in the E4 browser verification). See BillDetailDrawer.
+  const [payTarget, setPayTarget] = useState<Bill | null>(null);
+  const [paying, setPaying] = useState(false);
+  const confirmMarkPaid = (bill: Bill) => setPayTarget(bill);
+  const doMarkPaid = async () => {
+    if (!payTarget) return;
+    setPaying(true);
+    try {
+      await markBillPaid(payTarget.id);
+      message.success('已标记为已付');
+      setPayTarget(null);
+      actionRef.current?.reload();
+    } catch (e: any) {
+      message.error(errMsg(e));
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const columns: ProColumns<Bill>[] = [
     {
       title: '账单编号',
       dataIndex: 'billNo',
-      copyable: true,
       width: 170,
-      render: (v) => <span className="font-mono text-sm">{v as string}</span>,
+      search: false,
+      copyable: true,
+      render: (_, r) => <a className="code" onClick={() => setDrawerId(r.id)}>{r.billNo}</a>,
     },
-    { title: '客户名称', dataIndex: 'customerName', ellipsis: true },
+    {
+      title: '客户',
+      dataIndex: 'customerId',
+      ellipsis: true,
+      renderFormItem: () => (
+        <Select allowClear showSearch optionFilterProp="label" options={customerOptions} placeholder="全部客户" />
+      ),
+      render: (_, r) => (r.customer
+        ? <span><span className="code">{r.customer.code}</span> · {r.customer.name}</span>
+        : <span className="code">{r.customerId}</span>),
+    },
     {
       title: '账期',
       dataIndex: 'period',
-      width: 100,
-      render: (v) => <Tag>{v as string}</Tag>,
+      width: 110,
+      renderFormItem: () => <DatePicker picker="month" format="YYYY-MM" style={{ width: '100%' }} placeholder="选择月份" />,
+      render: (_, r) => <Tag className="num">{r.period}</Tag>,
     },
     {
-      title: '运费',
-      dataIndex: 'freightFee',
-      width: 100,
+      title: '金额',
+      dataIndex: 'amount',
+      width: 140,
+      align: 'right',
       search: false,
-      render: (v) => `¥${(v as number).toLocaleString()}`,
-    },
-    {
-      title: '仓储费',
-      dataIndex: 'storageFee',
-      width: 90,
-      search: false,
-      render: (v) => `¥${(v as number).toLocaleString()}`,
-    },
-    {
-      title: '操作费',
-      dataIndex: 'handlingFee',
-      width: 90,
-      search: false,
-      render: (v) => `¥${(v as number).toLocaleString()}`,
-    },
-    {
-      title: '账单总额',
-      dataIndex: 'totalAmount',
-      width: 120,
-      search: false,
-      sorter: true,
-      render: (v) => <span className="font-bold text-lg text-primary">¥{(v as number).toLocaleString()}</span>,
+      render: (_, r) => <b className="num">{fmtMoney(r.amount)}</b>,
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
-      valueEnum: {
-        UNPAID: { text: '待付款', status: 'Warning' },
-        PARTIAL: { text: '部分付款', status: 'Processing' },
-        PAID: { text: '已结清', status: 'Success' },
-        OVERDUE: { text: '已逾期', status: 'Error' },
-      },
+      width: 150,
+      valueType: 'select',
+      fieldProps: { options: [{ label: '待付款', value: 'unpaid' }, { label: '已结清', value: 'paid' }], placeholder: '全部' },
+      render: (_, r) => (
+        <Space size={4}>
+          <Tag color={STATUS_COLOR[r.status]}>{STATUS_LABEL[r.status] ?? r.status}</Tag>
+          {r.isProvisional && <Tag color="gold">待确认</Tag>}
+        </Space>
+      ),
     },
-    { title: '到期日', dataIndex: 'dueDate', width: 110, search: false },
+    {
+      title: '待确认',
+      dataIndex: 'isProvisional',
+      hideInTable: true,
+      valueType: 'select',
+      fieldProps: { options: [{ label: '仅待确认', value: 'true' }, { label: '仅已确认', value: 'false' }], placeholder: '全部' },
+    },
+    {
+      title: '到期日',
+      dataIndex: 'dueDate',
+      width: 110,
+      search: false,
+      render: (_, r) => <span className="num">{fmtDay(r.dueDate)}</span>,
+    },
     {
       title: '操作',
       valueType: 'option',
-      width: 130,
-      render: (_, record) => [
-        <a key="view" className="text-primary" onClick={() => setDrawerBill(record)}>
-          <EyeOutlined className="mr-1" />查看
-        </a>,
-        <a key="print" className="text-blue-500"><PrinterOutlined className="mr-1" />打印</a>,
+      width: 200,
+      fixed: 'right',
+      render: (_, r) => [
+        <a key="view" className="console-primary-action" onClick={() => setDrawerId(r.id)}>查看</a>,
+        canPay && r.status !== 'paid' && (
+          <a key="pay" className="console-primary-action" onClick={() => confirmMarkPaid(r)}>标记已付</a>
+        ),
+        canFinalize && r.isProvisional && (
+          <a key="finalize" className="console-primary-action" onClick={() => setDrawerId(r.id)}>补录/确认</a>
+        ),
       ],
     },
   ];
 
-  const detailColumns = [
-    { title: '费用项', dataIndex: 'item' },
-    { title: '金额', dataIndex: 'amount', render: (v: number) => `¥${v.toLocaleString()}` },
-    { title: '占比', dataIndex: 'ratio', render: (v: string) => <Tag>{v}</Tag> },
-  ];
-
-  const getDetailRows = (bill: BillItem) => {
-    const total = bill.totalAmount;
-    return [
-      { item: '运费', amount: bill.freightFee, ratio: `${((bill.freightFee / total) * 100).toFixed(1)}%` },
-      { item: '仓储费', amount: bill.storageFee, ratio: `${((bill.storageFee / total) * 100).toFixed(1)}%` },
-      { item: '操作处理费', amount: bill.handlingFee, ratio: `${((bill.handlingFee / total) * 100).toFixed(1)}%` },
-      { item: '附加费合计', amount: bill.surcharges, ratio: `${((bill.surcharges / total) * 100).toFixed(1)}%` },
-    ];
-  };
+  const periodLabel = loaded.period ?? '全部账期';
 
   return (
     <PageContainer
       header={{
         title: '客户账单管理',
-        subTitle: '查看、打印和管理客户月度账单与费用明细',
+        subTitle: '按客户、账期查看月度账单；核对费用明细与税费，登记收款',
       }}
     >
-      {/* Summary */}
       <Row gutter={16} className="mb-4">
-        <Col span={6}>
-          <Card size="small" className="shadow-sm text-center">
-            <Statistic title="本月账单总额" value={mockBills.filter(b => b.period === '2026-02').reduce((s, b) => s + b.totalAmount, 0)} prefix="¥" valueStyle={{ color: '#D23148', fontSize: 22 }} />
+        <Col xs={24} sm={6}>
+          <Card size="small" className="shadow-sm">
+            <Statistic title={`本月账单数 · ${periodLabel}`} value={kpi.count} suffix="笔" className="num" />
           </Card>
         </Col>
-        <Col span={6}>
-          <Card size="small" className="shadow-sm text-center">
-            <Statistic title="待收款" value={totalUnpaid} prefix="¥" valueStyle={{ color: '#f97316', fontSize: 22 }} />
+        <Col xs={24} sm={6}>
+          <Card size="small" className="shadow-sm">
+            <Statistic
+              title="本月金额合计"
+              value={fmtMoney(kpi.amount)}
+              className="num"
+              valueStyle={{ color: token.colorPrimary }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>币种以价卡为准</Typography.Text>
           </Card>
         </Col>
-        <Col span={6}>
-          <Card size="small" className="shadow-sm text-center">
-            <Statistic title="逾期账单" value={mockBills.filter(b => b.status === 'OVERDUE').length} suffix="笔" valueStyle={{ color: '#ef4444', fontSize: 22 }} />
+        <Col xs={24} sm={6}>
+          <Card size="small" className="shadow-sm">
+            <Statistic title="待付款金额" value={fmtMoney(kpi.unpaid)} className="num" valueStyle={{ color: token.colorWarning }} />
           </Card>
         </Col>
-        <Col span={6}>
-          <Card size="small" className="shadow-sm text-center">
-            <Statistic title="已结清" value={mockBills.filter(b => b.status === 'PAID').length} suffix="笔" valueStyle={{ color: '#10b981', fontSize: 22 }} />
+        <Col xs={24} sm={6}>
+          <Card size="small" className="shadow-sm">
+            <Statistic title="待确认账单数" value={kpi.provisional} suffix="笔" className="num" valueStyle={{ color: token.colorWarning }} />
           </Card>
         </Col>
       </Row>
 
-      <ProTable<BillItem>
+      <ProTable<Bill>
         columns={columns}
         actionRef={actionRef}
         cardBordered
-        request={fetchBills}
+        request={fetchList}
         rowKey="id"
+        scroll={{ x: 1000 }}
         search={{ labelWidth: 'auto', collapsed: false }}
-        pagination={{ pageSize: 10 }}
-        dateFormatter="string"
-        headerTitle={<Space><FileTextOutlined style={{ color: '#D23148' }} /><span>账单列表</span></Space>}
+        pagination={{ defaultPageSize: 20, showSizeChanger: true }}
+        options={{ reload: true, density: false, setting: false }}
+        headerTitle={<Space><FileTextOutlined style={{ color: token.colorPrimary }} /><span>账单列表</span></Space>}
         toolBarRender={() => [
-          <Button key="export" icon={<ExportOutlined />}>批量导出</Button>,
+          <Button key="refresh" icon={<ReloadOutlined />} onClick={() => actionRef.current?.reload()}>刷新</Button>,
         ]}
-        rowClassName={(r) => r.status === 'OVERDUE' ? 'bg-red-50' : ''}
       />
 
-      {/* Bill Detail Drawer */}
-      <Drawer
-        title={<Space><FileTextOutlined style={{ color: '#D23148' }} />{drawerBill?.billNo}</Space>}
-        open={!!drawerBill}
-        onClose={() => setDrawerBill(null)}
-        width={480}
-        extra={
-          <Button icon={<PrinterOutlined />} type="primary" style={{ backgroundColor: '#D23148' }}>
-            打印账单
-          </Button>
-        }
+      <BillDetailDrawer
+        billId={drawerId}
+        onClose={() => setDrawerId(null)}
+        onChanged={() => actionRef.current?.reload()}
+      />
+
+      <Modal
+        open={!!payTarget}
+        title={`标记账单 ${payTarget?.billNo ?? ''} 为已付？`}
+        onCancel={() => setPayTarget(null)}
+        okText="确认收款"
+        cancelText="取消"
+        confirmLoading={paying}
+        onOk={doMarkPaid}
+        destroyOnHidden
       >
-        {drawerBill && (
-          <>
-            <Descriptions column={2} size="small" bordered>
-              <Descriptions.Item label="客户">{drawerBill.customerName}</Descriptions.Item>
-              <Descriptions.Item label="账期">{drawerBill.period}</Descriptions.Item>
-              <Descriptions.Item label="开单日期">{drawerBill.billedAt}</Descriptions.Item>
-              <Descriptions.Item label="到期日">{drawerBill.dueDate}</Descriptions.Item>
-              <Descriptions.Item label="状态" span={2}>
-                <Tag color={drawerBill.status === 'PAID' ? 'success' : drawerBill.status === 'OVERDUE' ? 'error' : 'warning'}>
-                  {drawerBill.status === 'PAID' ? '已结清' : drawerBill.status === 'OVERDUE' ? '已逾期' : '待付款'}
-                </Tag>
-              </Descriptions.Item>
-            </Descriptions>
-            <Divider>费用明细</Divider>
-            <Table
-              dataSource={getDetailRows(drawerBill)}
-              columns={detailColumns}
-              rowKey="item"
-              size="small"
-              pagination={false}
-              summary={() => (
-                <tr className="bg-slate-50 font-bold">
-                  <td className="px-3 py-2">合计</td>
-                  <td className="px-3 py-2 text-primary">¥{drawerBill.totalAmount.toLocaleString()}</td>
-                  <td className="px-3 py-2">100%</td>
-                </tr>
-              )}
-            />
-          </>
-        )}
-      </Drawer>
+        {payTarget?.isProvisional
+          ? '该账单仍有待确认项，确认按当前金额记收款？'
+          : `将记录一笔 ${fmtMoney(payTarget?.amount)} 的收款并更新客户余额。`}
+      </Modal>
     </PageContainer>
   );
 };

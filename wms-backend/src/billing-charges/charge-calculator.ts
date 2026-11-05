@@ -59,6 +59,17 @@ export interface ActualCost {
   amount: number;
 }
 
+/**
+ * A priced, taxable service line that is NOT freight — handling, in practice.
+ * Emitted as its own `BASE` line and included in the taxable subtotal, so a
+ * 13% order taxes its handling at 13% too (ancillary rule, PRD §10 decision 3).
+ */
+export interface AdditionalBaseLine {
+  code: string;
+  name: string;
+  amount: number;
+}
+
 export interface ChargeLine {
   code: string;
   name: string;
@@ -96,12 +107,18 @@ const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 1
  * PASS_THROUGH with no actual yet stays `pending` with a null amount rather than
  * defaulting to 0 — a fuel line silently worth zero is the exact failure this
  * whole structure exists to prevent.
+ *
+ * `additionalTaxableBase` carries handling (and any other priced, taxable
+ * service) as extra BASE lines. They join the taxable subtotal but are NOT the
+ * `base` that PERCENT_OF_BASE surcharges multiply — those remain a percentage
+ * of freight only, as the price list defines them.
  */
 export function assembleCharges(input: {
   base: number;
   surcharges: SurchargeDef[];
   taxes: TaxRateDef[];
   actuals?: ActualCost[];
+  additionalTaxableBase?: AdditionalBaseLine[];
 }): ChargeBreakdown {
   const { base, surcharges, taxes } = input;
   const actuals = new Map((input.actuals ?? []).map((a) => [a.code, a.amount]));
@@ -112,6 +129,13 @@ export function assembleCharges(input: {
     code: 'BASE_FREIGHT', name: '基础运费', kind: 'BASE',
     amount: round2(base), taxable: true, pending: false,
   }];
+
+  for (const extra of input.additionalTaxableBase ?? []) {
+    lines.push({
+      code: extra.code, name: extra.name, kind: 'BASE',
+      amount: round2(extra.amount), taxable: true, pending: false,
+    });
+  }
 
   for (const s of surcharges) {
     const taxable = s.taxable !== false;

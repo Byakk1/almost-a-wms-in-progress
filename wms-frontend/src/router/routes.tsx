@@ -56,6 +56,8 @@ import InventoryFlow from '../pages/Warehouse/InventoryFlow';
 import DictionaryManage from '../pages/Settings/Dictionary';
 import RateCardManage from '../pages/Settings/RateCard';
 import UserManage from '../pages/Settings/Users';
+import TaxRateManage from '../pages/Settings/TaxRates';
+import SurchargeManage from '../pages/Settings/Surcharges';
 
 export interface RouteConfig {
   path: string;
@@ -106,6 +108,8 @@ export const routeElements: Record<string, React.ReactNode> = {
   '/settings/dictionary': <DictionaryManage />,
   '/settings/rate-cards': <RateCardManage />,
   '/settings/users': <UserManage />,
+  '/settings/tax-rates': <TaxRateManage />,
+  '/settings/surcharges': <SurchargeManage />,
   '/exception/center': <ExceptionCenter />,
   '/warehouse/inventory/transactions': <InventoryFlow />,
 };
@@ -257,6 +261,8 @@ export const menuRoutes: RouteConfig[] = [
           { path: '/settings/dictionary', name: '数据字典' },
           { path: '/settings/rate-cards', name: '价卡管理' },
           { path: '/settings/users', name: '用户管理' },
+          { path: '/settings/tax-rates', name: '税率管理' },
+          { path: '/settings/surcharges', name: '附加费管理' },
         ],
       },
     ],
