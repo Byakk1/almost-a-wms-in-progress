@@ -159,12 +159,15 @@ one component, `pages/Outbound/components/PickPanel.tsx`, hosted in two places:
 
 PickPanel: item table (SKU, name, bins `locationCode × qty` + batch, required, picked); scan input
 (autofocus, refocus after every scan and after the modal opens; Enter submits) matching SKU or
-`barcode` client-side like `Inbound/Receiving`, then `POST /pick {sku, qty: 1}`, displaying the
-server's `pickedQty`; red status line on unknown code / over-pick. `完成拣货` enabled once every item
-is fully picked → `complete-picking`.
+`barcode` client-side like `Inbound/Receiving`, then `POST /pick {sku, qty}`, displaying the
+server's `pickedQty`. A quantity field next to the scan input defaults to 1 and resets to 1 after
+each scan, so multiples are one scan plus a typed count (the scan still proves the right product;
+the server still refuses over-picks). Red status line on unknown code / over-pick. `完成拣货`
+enabled once every item is fully picked → `complete-picking`.
 
 ### 5.2 Packing — same pattern
-`pages/Outbound/Packing`'s scan area is extracted to `components/PackPanel.tsx` (behaviour unchanged)
+`pages/Outbound/Packing`'s scan area is extracted to `components/PackPanel.tsx` (gains the same
+quantity field as PickPanel; otherwise behaviour unchanged)
 and hosted in the existing packing workbench and in a list `<Modal>` (`开始打包` on PICKED rows starts
 packing and opens it; `打包` on PACKING rows opens it). `完成打包` inside the panel shows the weight
 step in place: weight kg required; L/W/H cm optional, all-or-none mirroring §4.2 → `complete-packing`.
