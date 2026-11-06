@@ -93,9 +93,11 @@ One transaction:
 | Exception status | Order status | RETRY | CANCEL |
 |---|---|---|---|
 | OPEN | EXCEPTION | exception→RESOLVED; order→PENDING; every item `pickedQty=0`, `packedQty=0`; clear `packageActualWeight/Length/Width/Height/BillingWeight`; keep carrier/trackingNo | exception→RESOLVED; order→CANCELLED |
-| OPEN | CANCELLED (cancelled from list) | 400 `订单已取消，无法重试` | exception→RESOLVED only |
-| OPEN | anything else | 400 (order no longer in EXCEPTION) | 400 |
-| not OPEN | — | 400 (existing behaviour) | 400 |
+| OPEN | CANCELLED (cancelled from list) | 409 `该订单已被取消，无法重试。请刷新页面。` | exception→RESOLVED only |
+| OPEN | anything else | 409 `订单当前状态为「{status}」，不在异常中。请刷新页面。` | same 409 |
+| not OPEN | — | 409 `该异常已被处理，请刷新页面。` | same 409 |
+
+All stale-state outcomes use the error contract in §4.7.
 
 Stock: reservations were already released when the exception was raised (`markException` →
 `releaseAllocations`), so neither action touches inventory. RETRY uses
@@ -111,32 +113,63 @@ except where noted):
 | `scripts/e2e-verify-picking.ts:146-147` | `completePacking(id, {actualWeightKg})`, `ship(id, {carrier, trackingNo})` |
 | `scripts/e2e-verify-picking.ts:165` | `resolveException(id, {action:'RETRY', ...})`; assert order now PENDING with counts reset |
 | `scripts/e2e-verify-fifo.ts:114,148` | same as picking |
-| `scripts/e2e-verify-billing.ts:153` | `ship(id, {...})` without overriding the fixture's stored carrier (body omits `carrier`) |
+| `scripts/e2e-verify-billing.ts:153` | order O7 goes through the real path: `completePacking(id, {actualWeightKg})` then `ship(id, {carrier:'E2E-BILL-EXP', trackingNo})`; the suite already owns an ACTIVE SHIPPING card with that carrier and synthetic prices |
 
-Suites that ship with a body-supplied carrier need a tagged ACTIVE SHIPPING rate card fixture, or must
-rely on the stored carrier (preferred: rely on stored, so no new fixture in old suites).
+The old suites are updated to the **real workflow**, not kept green via stored values:
+- picking + fifo suites create a tagged ACTIVE SHIPPING rate card (synthetic prices, removed in their
+  cleanup) and ship with a **body-supplied** carrier + tracking, so the carrier-whitelist path runs in
+  every suite that ships;
+- each asserts the written columns (`packageActualWeight`, `carrier`, `trackingNo`, `shippedAt`);
+- each adds one negative check on its own path (ship without tracking → 400, no state change), so a
+  regression in validation fails more than one suite.
+The full negative matrix still lives in the new pilot-path suite (§6.1).
+
+### 4.7 Error contract (user-facing messages, stale-state refresh)
+Today `request.ts` shows `Request Failed: Request failed with status code 400` for **every** 400 —
+the server's reason is never displayed, although page comments assume it is. Fix in this slice:
+
+- **Backend**: messages are written for the operator (Chinese, like the rest of the UI), say what
+  happened and what to do. Two classes:
+  - **Input errors → 400** (missing weight, unknown carrier, over-pick, …).
+  - **Stale state → 409 Conflict** with `code: 'STALE_STATE'` — the record changed since the screen
+    loaded (order cancelled, already shipped, exception already handled). `assertTransition` throws
+    this (6 call sites), with the message
+    `{实体}当前状态为「{状态中文名}」，无法执行此操作。请刷新页面。` instead of the raw enum list.
+- **Frontend `request.ts`**: for 400/403/409/422 show `error.response.data.message`
+  (string, or first entry of a validation array), falling back to the current generic text.
+- **Frontend pages**: every action/modal on the outbound list, workbenches, receiving list and
+  exception page catches `status === 409` → close the modal and reload the list/queue automatically.
+  Implemented once as a small helper (`isStale(err)`), not per page.
+- Suites that assert on status are re-checked: any that expected 400 for an illegal transition are
+  updated to 409.
 
 ## 5. Frontend changes (`wms-frontend/src`)
 
-### 5.1 Picking workbench (new) — `pages/Outbound/PickWorkbench/index.tsx`
-Route `/outbound/pick-workbench` (`拣货操作台`, `hideInMenu`, like the packing workbench); route
-permission OPS.
+### 5.1 Picking — shared scan panel, used in a list modal and a workbench
+Scanning stays mandatory (it is the accuracy control), but no page jump is required. The scan UI is
+one component, `pages/Outbound/components/PickPanel.tsx`, hosted in two places:
 
-- **Queue**: orders in ALLOCATED, WAVE_ASSIGNED, PICKING (three list calls, merged, like Packing).
-  Opening a non-PICKING order calls `start-picking` first, then loads detail.
-- **Item table**: SKU, name, bins (`locationCode × qty`, batch if present), required, picked.
-- **Scan input** (autofocus, Enter): match SKU or `barcode` against the order's items client-side
-  (same rule as `Inbound/Receiving`); on hit `POST /pick {sku, qty: 1}`; display the server's
-  `pickedQty`. Unknown code / over-pick → red status line, server message via interceptor.
-- **完成拣货** enabled when every item `pickedQty >= requiredQty` → `complete-picking`, back to queue.
-- **Entry points**: `去拣货` link on ALLOCATED / WAVE_ASSIGNED / PICKING rows of the outbound list
-  (replaces those rows' `开始拣货`/`完成拣货` popconfirms, which cannot succeed without picking);
-  dashboard shortcut.
+- **Outbound list (primary for high volume)**: the row buttons stay. `开始拣货` (ALLOCATED /
+  WAVE_ASSIGNED) calls `start-picking` and opens the panel in a `<Modal>` on that order;
+  on PICKING rows the button reads `拣货` and opens the same modal. Closing it returns to the
+  list exactly where the user was (filters/page kept); the list reloads.
+- **Picking workbench** `/outbound/pick-workbench` (`拣货操作台`, `hideInMenu`, OPS): queue of
+  ALLOCATED / WAVE_ASSIGNED / PICKING orders + the panel, for a dedicated pick station; after
+  completing one order the next in the queue opens automatically. Dashboard shortcut.
 
-### 5.2 Packing — weight modal
-`pages/Outbound/Packing`: `完成打包` opens a Form modal (weight kg required; L/W/H cm optional,
-client-side all-or-none rule mirroring §4.2) → `complete-packing` with the body. The outbound list's
-`完成打包` popconfirm becomes `去打包` (navigate), since completing without weight is now rejected.
+PickPanel: item table (SKU, name, bins `locationCode × qty` + batch, required, picked); scan input
+(autofocus, refocus after every scan and after the modal opens; Enter submits) matching SKU or
+`barcode` client-side like `Inbound/Receiving`, then `POST /pick {sku, qty: 1}`, displaying the
+server's `pickedQty`; red status line on unknown code / over-pick. `完成拣货` enabled once every item
+is fully picked → `complete-picking`.
+
+### 5.2 Packing — same pattern
+`pages/Outbound/Packing`'s scan area is extracted to `components/PackPanel.tsx` (behaviour unchanged)
+and hosted in the existing packing workbench and in a list `<Modal>` (`开始打包` on PICKED rows starts
+packing and opens it; `打包` on PACKING rows opens it). `完成打包` inside the panel shows the weight
+step in place: weight kg required; L/W/H cm optional, all-or-none mirroring §4.2 → `complete-packing`.
+If every item is already packed when the modal opens, it goes straight to the weight step, so a
+supervisor finishing an order is two inputs and one click.
 
 ### 5.3 Ship modal
 Outbound list `签出发货` opens a modal: carrier `Select` (options from §4.4; current value shown even
@@ -145,8 +178,9 @@ if not in list), tracking `Input`; both prefilled from the order; both required 
 ### 5.4 Exception resolve
 `pages/Outbound/Exception`: OPEN rows get `处理` → modal with radio `重试（退回待分配）` /
 `取消订单`, optional note → `resolve`. `取消订单` rendered only when the user has
-`outbound.cancel` (ADMIN). The list's `EXCEPTION` row action keeps `取消` for admins and gains
-`处理` linking to the exception page.
+`outbound.cancel` (ADMIN). The outbound list's `EXCEPTION` rows get the **same resolve modal** in
+place (resolving the order's OPEN exception), and keep `取消` for admins. A 409 from any of these
+closes the modal, shows the server message and reloads (§4.7).
 
 ### 5.5 Inbound creation
 `pages/Inbound` list: `新建收货单` button (permission `receiving.create`) → modal: customer,
@@ -162,7 +196,8 @@ backing endpoint like existing entries. UX mirror only; backend `@Roles` remain 
 
 ### 5.7 UI conventions
 antd declarative `<Modal>` (static `Modal.confirm` renders nothing under React 19 — known E4 bug);
-numeric inputs via `InputNumber`; errors surfaced by the existing `request.ts` interceptor.
+numeric inputs via `InputNumber`; errors surfaced by the fixed `request.ts` interceptor (§4.7).
+Modals must not steal focus from the scan input (scanner guns type + Enter into whatever is focused).
 
 ## 6. Testing and verification
 
@@ -172,7 +207,8 @@ Detail locations/barcode · complete-packing: missing weight / weight ≤ 0 / pa
 state change; body override persists; stored-only values accepted · carriers: only ACTIVE SHIPPING,
 deduped, response contains no numeric/price fields · resolve: RETRY resets counts + package fields
 and order→PENDING then re-allocates; CANCEL by OPERATOR → 403; CANCEL by admin → CANCELLED;
-cancelled-order RETRY → 400, CANCEL → exception closed; non-OPEN → 400; audit rows present.
+cancelled-order RETRY → 409 STALE_STATE with the friendly message, CANCEL → exception closed;
+non-OPEN → 409; illegal transitions anywhere → 409 with the `请刷新页面` message; audit rows present.
 Plus: the callers updated per §4.6; all existing `e2e-verify-*` suites; backend `tsc`; frontend build.
 
 ### 6.2 Browser — `wms-frontend/scripts/verify-pilot-flow.cjs`
@@ -185,10 +221,30 @@ each step. Captures `pageerror` and console errors; screenshots to `scripts/shot
 
 ### 6.3 Data safety
 - Fresh `pg_dump` to `E:\wms-backups` (+sha256) before the first run.
-- All fixtures tagged; cleanup deletes tagged rows (orders, receiving orders, inventory, inventory
-  transactions, bills, rate card, users, their audit/op-log rows) — users have no delete endpoint,
-  so cleanup uses Prisma directly. Cleanup runs in `finally` and is idempotent.
-- Table row counts snapshotted before and compared after; any difference fails the run.
+- **FK facts (checked against the live DB 2026-11-06, `pg_constraint`)**: no foreign key references
+  `User`, so deleting a test user can never fail — but `operatorId` columns in `OperationLog`,
+  `InventoryTransaction`, `ReceivingOrder` and `ExceptionCase.createdBy` are plain strings and
+  **would be orphaned**, so rows carrying test-user ids are deleted explicitly. The constraints that
+  *can* fail are the RESTRICT ones among the business tables (e.g. `OutboundAllocation → Inventory`,
+  `WaveOrder → OutboundOrder`, `PutawayTask → ReceivingOrder/Product/Location`,
+  `Inventory → Product/Location/Customer`, `CustomerBill → Customer`, `Product → Customer`).
+- **Delete by recorded ids, children first.** Setup records every id it creates (customer, product,
+  location, rate card, users) and each order/receipt id as the run proceeds. Cleanup, in one
+  transaction, in this order:
+  1. `WaveOrder`/`Wave` for test orders → `OutboundAllocation` → `OutboundException` →
+     `OutboundItem` → `OutboundOrder`
+  2. `BillItem` → `CustomerBill` (test customer)
+  3. `PutawayTask` → `ReceivingItem` → `ReceivingOrder`
+  4. `InventoryTransaction` (test customer, or `refId` in test orders/receipts) → `Inventory`
+  5. `Location` → `Product` → `CustomerRateCard` → `RateCardItem`/`ShippingZone` → `RateCard`
+     → `CustomerTransaction` → `Customer`
+  6. `OperationLog` where `entityId` ∈ recorded ids **or** `operatorId` ∈ test users;
+     `ExceptionCase` created by test users → `User` (test users)
+  Nothing is deleted by name pattern alone; the tag is only a second guard (`id IN (...) AND tag`).
+- Cleanup runs in `finally`, is idempotent (re-runnable after a crash, using the tag to rediscover
+  ids), and also runs once **before** setup to clear leftovers from an aborted run.
+- Row counts of **every** table in the `public` schema snapshotted before and compared after; any
+  difference fails the run and prints the table names, so an orphan cannot pass silently.
 - No real customer, rate card or price is read into fixtures or written anywhere.
 
 ### 6.4 Regression gates
